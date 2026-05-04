@@ -31,9 +31,11 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from sse_starlette.sse import EventSourceResponse
 
+from .bundle import build_bundle_zip
 from .config import settings
-from .models import Caption, ConfusionMark, Translation
+from .models import Caption, ConfusionMark, StudyPack, Translation
 from .store import store
+from .studypack import build_study_pack
 from .translation import GemmaTranslator, TranslationBus, TranslationWorker
 
 log = logging.getLogger(__name__)
@@ -149,6 +151,74 @@ def end_class(class_id: str):
         transcriber.stop()
         transcriber = None
     return session
+
+
+# ---- Study packs + bundle download --------------------------------------------
+
+# Cache: (class_id, lang) -> StudyPack. Generation is expensive; once a pack
+# exists we don't regenerate unless the caller asks for refresh.
+_pack_cache: dict[tuple[str, str], StudyPack] = {}
+
+
+def _get_or_build_pack(class_id: str, lang: str) -> StudyPack:
+    key = (class_id, lang)
+    if key in _pack_cache:
+        return _pack_cache[key]
+    if translator is None:
+        raise HTTPException(503, "Translator not ready")
+    captions = store.captions(class_id)
+    if not captions:
+        raise HTTPException(400, "No captions yet — class hasn't produced any text")
+    confused = {m.caption_index for m in store.confusions(class_id)}
+    pack = build_study_pack(translator, captions, confused, lang)
+    _pack_cache[key] = pack
+    return pack
+
+
+@app.post("/api/class/{class_id}/studypack/{lang}")
+def generate_pack(class_id: str, lang: str, refresh: bool = False):
+    if store.get(class_id) is None:
+        raise HTTPException(404, "Class not found")
+    if lang not in settings.supported_languages and lang != "en":
+        raise HTTPException(400, f"Unsupported language: {lang}")
+    if refresh:
+        _pack_cache.pop((class_id, lang), None)
+    return _get_or_build_pack(class_id, lang)
+
+
+@app.get("/api/lecture/{class_id}/bundle")
+def download_bundle(class_id: str, lang: str = "en"):
+    session = store.get(class_id)
+    if session is None:
+        raise HTTPException(404, "Class not found")
+    if lang not in settings.supported_languages and lang != "en":
+        raise HTTPException(400, f"Unsupported language: {lang}")
+
+    captions = store.captions(class_id)
+    translations = store.translations(class_id, lang) if lang != "en" else []
+    confusions = store.confusions(class_id)
+
+    pack: StudyPack | None = None
+    if captions:
+        try:
+            pack = _get_or_build_pack(class_id, lang)
+        except HTTPException:
+            pack = None
+
+    data = build_bundle_zip(
+        session=session,
+        lang=lang,
+        captions=captions,
+        translations=translations,
+        confusions=confusions,
+        study_pack=pack,
+    )
+    fname = f"{session.title.replace(' ', '_')}_{lang}.zip"
+    return Response(
+        content=data,
+        media_type="application/zip",
+        headers={"content-disposition": f'attachment; filename="{fname}"'},
+    )
 
 
 @app.get("/api/class/active")
