@@ -85,18 +85,41 @@ class OllamaTranslator:
         url: str = settings.ollama_url,
         model: str = settings.ollama_model,
         timeout_s: float = settings.ollama_timeout_s,
+        keep_alive: str = settings.ollama_keep_alive,
     ):
         self.url = url.rstrip("/")
         self.model = model
         self.timeout_s = timeout_s
+        self.keep_alive = keep_alive
         self._lock = threading.Lock()
-        log.info("OllamaTranslator initialized (url=%s, model=%s)", self.url, self.model)
+        log.info(
+            "OllamaTranslator initialized (url=%s, model=%s, keep_alive=%s)",
+            self.url, self.model, self.keep_alive,
+        )
 
-    def _post_generate(self, prompt: str, *, max_tokens: int, temperature: float, stop: list[str] | None = None) -> str:
+    def _chat(
+        self,
+        user_message: str,
+        *,
+        max_tokens: int,
+        temperature: float,
+        think: bool = False,
+        stop: list[str] | None = None,
+    ) -> str:
+        """POST /api/chat — applies Gemma's chat template (raw /api/generate doesn't).
+
+        Gemma 4 has a "thinking mode" enabled by default that puts the model's
+        chain-of-thought into a `thinking` field and pushes the actual answer
+        out of frame when num_predict is small. For translation we disable it
+        (translation doesn't need reasoning); for study-pack generation we keep
+        it enabled because reasoning improves the summary/key-term quality.
+        """
         body = {
             "model": self.model,
-            "prompt": prompt,
+            "messages": [{"role": "user", "content": user_message}],
             "stream": False,
+            "think": think,
+            "keep_alive": self.keep_alive,
             "options": {
                 "temperature": temperature,
                 "num_predict": max_tokens,
@@ -106,7 +129,7 @@ class OllamaTranslator:
             body["options"]["stop"] = stop
         data = json.dumps(body).encode("utf-8")
         req = urllib.request.Request(
-            f"{self.url}/api/generate",
+            f"{self.url}/api/chat",
             data=data,
             headers={"content-type": "application/json"},
             method="POST",
@@ -117,20 +140,34 @@ class OllamaTranslator:
                     payload = json.loads(resp.read().decode("utf-8"))
             except urllib.error.URLError as e:
                 raise RuntimeError(f"Ollama request failed: {e}") from e
-        return (payload.get("response") or "").strip()
+        msg = payload.get("message") or {}
+        # Some models put the answer in `thinking` if think=true and no
+        # post-thinking content was emitted in budget. Fall through to it.
+        return (msg.get("content") or msg.get("thinking") or "").strip()
 
     def translate(self, text: str, target_lang: str, max_tokens: int = 256) -> str:
         if target_lang == "en":
             return text
-        return self._post_generate(
+        return self._chat(
             translation_prompt(text, target_lang),
             max_tokens=max_tokens,
             temperature=0.2,
-            stop=["\n\n", "Sentence:", "Translation in"],
+            think=False,  # translations don't benefit from chain-of-thought
         )
 
     def generate(self, prompt: str, max_tokens: int = 512, temperature: float = 0.3) -> str:
-        return self._post_generate(prompt, max_tokens=max_tokens, temperature=temperature)
+        # Study-pack generation does benefit from reasoning. Bigger budget too.
+        return self._chat(prompt, max_tokens=max_tokens, temperature=temperature, think=True)
+
+    def warm_up(self) -> None:
+        """Force the model into memory so the first real request doesn't pay
+        the ~85s cold-load cost. Called at server startup.
+        """
+        try:
+            self._chat("Reply with just: ok", max_tokens=10, temperature=0.0, think=False)
+            log.info("Ollama warm-up complete")
+        except Exception as e:  # noqa: BLE001
+            log.warning("Ollama warm-up failed: %s", e)
 
 
 # ---- llama.cpp backend ---------------------------------------------------------

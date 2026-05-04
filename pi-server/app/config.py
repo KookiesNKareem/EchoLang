@@ -32,7 +32,13 @@ class Settings(BaseSettings):
     # Ollama backend
     ollama_url: str = "http://127.0.0.1:11434"
     ollama_model: str = "gemma4:e2b"
-    ollama_timeout_s: float = 60.0
+    # Generation latency on Pi 5 is ~6 tok/s for E2B Q4_K_M, so a 60-token
+    # translation needs ~10s. Cold-start adds ~85s to the first call.
+    ollama_timeout_s: float = 180.0
+    # Keep model resident across calls. "24h" practically never unloads during
+    # a class; "10m" idles after 10 min. Negative integers also mean "forever"
+    # but pydantic settings serializes that awkwardly to Ollama's parser.
+    ollama_keep_alive: str = "24h"
 
     # llama.cpp backend
     gemma_model: str = "gemma-4-E2B-it-Q4_K_M.gguf"

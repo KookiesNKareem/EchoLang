@@ -55,6 +55,10 @@ async def lifespan(app: FastAPI):
     global translator, worker
     translator = make_translator()
     log.info("translator backend: %s", type(translator).__name__)
+    # Pre-load the model so the first real translation doesn't pay cold-start.
+    if hasattr(translator, "warm_up"):
+        log.info("warming up translator (this can take ~90s on first boot)…")
+        await asyncio.to_thread(translator.warm_up)
     worker = TranslationWorker(
         translator=translator,
         bus=bus,
@@ -138,10 +142,22 @@ def start_class(req: StartClassReq):
         transcriber = FakeTranscriber(on_caption=_on_caption)
         log.info("FAKE MODE: using FakeTranscriber (no whisper model loaded)")
     else:
-        # Lazy-import so the missing Pi-only audio deps don't crash the
-        # server during dev on a laptop without portaudio installed.
-        from .transcription import WhisperTranscriber
-        transcriber = WhisperTranscriber(on_caption=_on_caption)
+        # Lazy-import so the missing audio deps don't crash the server when
+        # transcription isn't available (e.g. no USB mic, fresh Pi without
+        # whisper.cpp + sounddevice installed). Falling back to typed-caption
+        # mode means the rest of the pipeline (translation, study pack, bundle)
+        # still works.
+        try:
+            from .transcription import WhisperTranscriber
+            transcriber = WhisperTranscriber(on_caption=_on_caption)
+        except (ModuleNotFoundError, FileNotFoundError, OSError) as e:
+            log.warning(
+                "Audio transcription unavailable (%s). Class started in "
+                "typed-caption mode — POST /api/class/{id}/caption to add lines.",
+                e,
+            )
+            transcriber = None
+            return session
     transcriber.start()
     return session
 
