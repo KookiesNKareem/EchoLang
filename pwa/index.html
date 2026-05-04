@@ -1,0 +1,48 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no" />
+<meta name="theme-color" content="#0a0a0a" />
+<title>LocalLearning</title>
+<link rel="manifest" href="/static/manifest.webmanifest" />
+<link rel="stylesheet" href="/static/app.css" />
+</head>
+<body>
+  <header id="topbar">
+    <div class="brand">LocalLearning</div>
+    <div id="status" class="status idle">Connecting…</div>
+  </header>
+
+  <!-- Screen 1: pick language -->
+  <section id="screen-lang" class="screen">
+    <h1>Pick your language</h1>
+    <p class="hint">Captions will appear in the language you choose.</p>
+    <div id="lang-grid" class="lang-grid"></div>
+    <button id="join-btn" class="primary" disabled>Join class</button>
+  </section>
+
+  <!-- Screen 2: live captions -->
+  <section id="screen-live" class="screen hidden">
+    <div id="class-meta" class="meta"></div>
+    <ol id="captions" class="captions" aria-live="polite"></ol>
+    <div id="empty-state" class="empty">Listening for the teacher…</div>
+  </section>
+
+  <!-- Screen 3: not-in-class fallback / teacher console -->
+  <section id="screen-noclass" class="screen hidden">
+    <h1>No class is in session</h1>
+    <p class="hint">Ask your teacher to start a class.</p>
+    <details class="teacher">
+      <summary>Teacher: start a class</summary>
+      <input id="t-title" placeholder="Class title (e.g. Biology 101)" />
+      <input id="t-name" placeholder="Your name (optional)" />
+      <button id="t-start" class="primary">Start class</button>
+      <p id="t-result" class="hint"></p>
+      <div id="t-qr" class="qr"></div>
+    </details>
+  </section>
+
+  <script src="/static/app.js" defer></script>
+</body>
+</html>

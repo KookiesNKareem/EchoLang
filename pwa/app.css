@@ -1,0 +1,173 @@
+:root {
+  --bg: #0a0a0a;
+  --fg: #f5f5f5;
+  --muted: #9aa0a6;
+  --accent: #6cf;
+  --accent-2: #fc6;
+  --good: #5e6;
+  --bad: #f55;
+  --card: #161616;
+  --line: #232323;
+  --confused: #422;
+}
+
+* { box-sizing: border-box; }
+html, body {
+  margin: 0; padding: 0;
+  background: var(--bg); color: var(--fg);
+  font: 16px/1.4 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  min-height: 100vh;
+  overscroll-behavior-y: none;
+}
+
+#topbar {
+  position: sticky; top: 0; z-index: 5;
+  display: flex; justify-content: space-between; align-items: center;
+  padding: 12px 16px;
+  background: rgba(10,10,10,0.92);
+  border-bottom: 1px solid var(--line);
+  backdrop-filter: blur(8px);
+}
+.brand { font-weight: 600; letter-spacing: -0.01em; }
+.status {
+  font-size: 12px;
+  padding: 4px 10px;
+  border-radius: 999px;
+  background: var(--card);
+  color: var(--muted);
+}
+.status.live { color: var(--bg); background: var(--good); }
+.status.error { color: var(--bg); background: var(--bad); }
+
+.screen { padding: 20px 16px 80px; }
+.hidden { display: none; }
+h1 { font-size: 22px; margin: 8px 0 4px; }
+.hint { color: var(--muted); margin: 0 0 18px; }
+
+/* ---- language picker ------ */
+.lang-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+  gap: 10px;
+  margin-bottom: 24px;
+}
+.lang-tile {
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  padding: 16px 12px;
+  font-size: 16px;
+  color: var(--fg);
+  cursor: pointer;
+  text-align: left;
+  display: flex; flex-direction: column; gap: 4px;
+  transition: border-color 0.15s, background 0.15s;
+}
+.lang-tile .native {
+  font-size: 20px;
+  font-weight: 600;
+}
+.lang-tile .english {
+  font-size: 12px;
+  color: var(--muted);
+}
+.lang-tile.selected {
+  border-color: var(--accent);
+  background: #122;
+}
+
+button.primary {
+  background: var(--accent); color: var(--bg);
+  border: none; border-radius: 10px;
+  padding: 14px 20px; font-size: 16px; font-weight: 600;
+  cursor: pointer;
+  width: 100%;
+}
+button.primary:disabled { opacity: 0.4; cursor: not-allowed; }
+
+/* ---- live captions ------ */
+.meta {
+  color: var(--muted);
+  font-size: 13px;
+  margin-bottom: 12px;
+}
+.meta strong { color: var(--fg); }
+
+.captions {
+  list-style: none;
+  padding: 0; margin: 0;
+  display: flex; flex-direction: column;
+  gap: 10px;
+}
+.cap {
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  padding: 14px 14px 14px 16px;
+  position: relative;
+  font-size: 18px;
+  line-height: 1.45;
+  cursor: pointer;
+  transition: background 0.2s;
+}
+.cap:active { background: #1c1c1c; }
+.cap.confused {
+  background: var(--confused);
+  border-color: #844;
+}
+.cap .when {
+  display: block;
+  font-size: 11px;
+  color: var(--muted);
+  margin-bottom: 4px;
+  font-variant-numeric: tabular-nums;
+}
+.cap[dir="rtl"] { text-align: right; }
+.cap .mark-pill {
+  display: none;
+  position: absolute;
+  top: 6px; inset-inline-end: 8px;
+  background: var(--accent-2);
+  color: var(--bg);
+  font-size: 11px;
+  padding: 2px 8px;
+  border-radius: 999px;
+}
+.cap.confused .mark-pill { display: inline-block; }
+
+.empty {
+  color: var(--muted);
+  text-align: center;
+  padding: 60px 0;
+  font-style: italic;
+}
+.empty.hidden { display: none; }
+
+/* ---- teacher console ------ */
+.teacher {
+  margin-top: 24px;
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  padding: 12px 14px;
+}
+.teacher summary { cursor: pointer; color: var(--muted); }
+.teacher input {
+  display: block; width: 100%;
+  margin: 10px 0;
+  padding: 12px;
+  border-radius: 8px;
+  border: 1px solid var(--line);
+  background: var(--bg); color: var(--fg);
+  font-size: 16px;
+}
+.qr {
+  margin-top: 16px;
+  display: flex; flex-direction: column; align-items: center; gap: 8px;
+}
+.qr img {
+  background: white; padding: 8px; border-radius: 8px;
+  image-rendering: pixelated;
+  width: 240px; height: 240px;
+}
+.qr .url { font-family: ui-monospace, monospace; color: var(--accent); }
