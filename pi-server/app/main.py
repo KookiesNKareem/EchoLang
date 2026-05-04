@@ -1,0 +1,255 @@
+"""FastAPI app for the LocalLearning Pi server.
+
+Endpoints (v1):
+  POST /api/class                   - start a new class (body: title, teacher?)
+  POST /api/class/{id}/end          - end a class
+  GET  /api/class/active            - currently-live class, if any
+  GET  /api/class/{id}              - class metadata + caption count
+
+  GET  /api/qr/{id}                 - QR code PNG that resolves to /join?class={id}
+  GET  /join                        - student PWA entry point (serves pwa/index.html)
+
+  GET  /api/stream/{class_id}/{lang}     - SSE stream of translated captions for a language
+  POST /api/class/{id}/confusion         - body: {student_id, caption_index}
+
+  GET  /api/health                  - health check
+"""
+from __future__ import annotations
+
+import asyncio
+import io
+import json
+import logging
+from contextlib import asynccontextmanager
+from pathlib import Path
+
+import qrcode
+from fastapi import FastAPI, HTTPException, Request, Response
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
+from pydantic import BaseModel
+from sse_starlette.sse import EventSourceResponse
+
+from .config import settings
+from .models import Caption, ConfusionMark, Translation
+from .store import store
+from .translation import GemmaTranslator, TranslationBus, TranslationWorker
+
+log = logging.getLogger(__name__)
+logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+
+
+# ---- Globals wired up at startup --------------------------------------------------
+
+bus = TranslationBus()
+translator: GemmaTranslator | None = None
+worker: TranslationWorker | None = None
+transcriber = None  # WhisperTranscriber, lazy
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    global translator, worker
+    translator = GemmaTranslator()
+    worker = TranslationWorker(
+        translator=translator,
+        bus=bus,
+        on_translation=lambda t: _persist_translation(t),
+    )
+    await worker.start()
+    log.info("translation worker started")
+    yield
+    if worker is not None:
+        await worker.stop()
+    if transcriber is not None:
+        transcriber.stop()
+
+
+def _persist_translation(t: Translation) -> None:
+    active = store.active()
+    if active is None:
+        return
+    store.append_translation(active.id, t)
+
+
+def _on_caption(text: str, started_at, ended_at) -> None:
+    """Called from the whisper background thread."""
+    active = store.active()
+    if active is None:
+        return
+    caption = store.append_caption(active.id, text, started_at, ended_at)
+    log.info("caption #%d: %s", caption.index, caption.text)
+    if worker is not None:
+        worker.submit_from_thread(caption)
+
+
+app = FastAPI(title="LocalLearning Pi Server", lifespan=lifespan)
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=False,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+
+# ---- Schemas ---------------------------------------------------------------------
+
+
+class StartClassReq(BaseModel):
+    title: str
+    teacher: str | None = None
+
+
+class ConfusionReq(BaseModel):
+    student_id: str
+    caption_index: int
+
+
+# ---- Health --------------------------------------------------------------------
+
+
+@app.get("/api/health")
+def health():
+    active = store.active()
+    return {
+        "ok": True,
+        "active_class": active.id if active else None,
+        "supported_languages": settings.supported_languages,
+    }
+
+
+# ---- Class lifecycle ------------------------------------------------------------
+
+
+@app.post("/api/class")
+def start_class(req: StartClassReq):
+    global transcriber
+    if store.active() is not None:
+        raise HTTPException(409, "A class is already in progress")
+    session = store.start_class(title=req.title, teacher=req.teacher)
+
+    # Start audio + whisper. Lazy-import so a missing Pi-only dep doesn't crash
+    # the rest of the server during dev on laptops.
+    from .transcription import WhisperTranscriber
+
+    transcriber = WhisperTranscriber(on_caption=_on_caption)
+    transcriber.start()
+    return session
+
+
+@app.post("/api/class/{class_id}/end")
+def end_class(class_id: str):
+    global transcriber
+    session = store.end_class(class_id)
+    if session is None:
+        raise HTTPException(404, "Class not found")
+    if transcriber is not None:
+        transcriber.stop()
+        transcriber = None
+    return session
+
+
+@app.get("/api/class/active")
+def active_class():
+    session = store.active()
+    if session is None:
+        return Response(status_code=204)
+    return session
+
+
+@app.get("/api/class/{class_id}")
+def get_class(class_id: str):
+    session = store.get(class_id)
+    if session is None:
+        raise HTTPException(404, "Class not found")
+    return {
+        "session": session,
+        "caption_count": len(store.captions(class_id)),
+        "confusion_count": len(store.confusions(class_id)),
+    }
+
+
+# ---- QR + join page -------------------------------------------------------------
+
+
+@app.get("/api/qr/{class_id}")
+def class_qr(class_id: str, request: Request):
+    base = str(request.base_url).rstrip("/")
+    join_url = f"{base}/join?class={class_id}"
+    img = qrcode.make(join_url)
+    buf = io.BytesIO()
+    img.save(buf, format="PNG")
+    buf.seek(0)
+    return Response(content=buf.getvalue(), media_type="image/png")
+
+
+# ---- Live translation stream ----------------------------------------------------
+
+
+@app.get("/api/stream/{class_id}/{lang}")
+async def stream(class_id: str, lang: str, request: Request):
+    if lang not in settings.supported_languages and lang != "en":
+        raise HTTPException(400, f"Unsupported language: {lang}")
+    if store.get(class_id) is None:
+        raise HTTPException(404, "Class not found")
+
+    q = await bus.subscribe(lang)
+
+    async def event_gen():
+        try:
+            # Replay any captions/translations that have already been emitted
+            # so a late-joining student doesn't miss what the teacher said.
+            if lang == "en":
+                for c in store.captions(class_id):
+                    yield {"event": "caption", "data": json.dumps(c.model_dump(mode="json"))}
+            else:
+                for t in store.translations(class_id, lang):
+                    yield {"event": "caption", "data": json.dumps(t.model_dump(mode="json"))}
+
+            while True:
+                if await request.is_disconnected():
+                    break
+                try:
+                    item: Translation = await asyncio.wait_for(q.get(), timeout=15)
+                except asyncio.TimeoutError:
+                    yield {"event": "ping", "data": "1"}
+                    continue
+                if item.lang != lang:
+                    continue
+                yield {"event": "caption", "data": json.dumps(item.model_dump(mode="json"))}
+        finally:
+            await bus.unsubscribe(lang, q)
+
+    return EventSourceResponse(event_gen())
+
+
+# ---- Confusion marks ------------------------------------------------------------
+
+
+@app.post("/api/class/{class_id}/confusion")
+def add_confusion(class_id: str, req: ConfusionReq):
+    if store.get(class_id) is None:
+        raise HTTPException(404, "Class not found")
+    mark = ConfusionMark(student_id=req.student_id, caption_index=req.caption_index)
+    store.add_confusion(class_id, mark)
+    return mark
+
+
+# ---- Static PWA ----------------------------------------------------------------
+
+PWA_DIR = Path(__file__).resolve().parents[2] / "pwa"
+
+
+@app.get("/")
+@app.get("/join")
+def serve_pwa_root():
+    index = PWA_DIR / "index.html"
+    if not index.exists():
+        raise HTTPException(404, "PWA not built yet")
+    return FileResponse(index)
+
+
+if PWA_DIR.exists():
+    app.mount("/static", StaticFiles(directory=PWA_DIR), name="static")
