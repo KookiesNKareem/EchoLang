@@ -43,6 +43,23 @@
     </details>
   </section>
 
+  <!-- Screen 4: teacher live console (active class) -->
+  <section id="screen-teacher" class="screen hidden">
+    <div id="teacher-meta" class="meta"></div>
+    <div class="qr" id="teacher-qr"></div>
+    <h2 style="margin-top:24px">Type a caption</h2>
+    <p class="hint">If audio isn't working, type lines and students see translations stream in.</p>
+    <textarea id="t-line" rows="2" placeholder="Type the next sentence and press Send…"
+      style="width:100%;background:var(--card);color:var(--fg);border:1px solid var(--line);
+             border-radius:8px;padding:12px;font-size:16px;font-family:inherit"></textarea>
+    <button id="t-inject" class="primary" style="margin-top:8px">Send caption</button>
+    <button id="t-end" style="margin-top:8px;background:var(--card);color:var(--fg);
+                              border:1px solid var(--line);border-radius:8px;padding:12px;width:100%">
+      End class
+    </button>
+    <p id="t-inject-status" class="hint"></p>
+  </section>
+
   <script src="/static/app.js" defer></script>
 </body>
 </html>

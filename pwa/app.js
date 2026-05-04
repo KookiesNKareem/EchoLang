@@ -159,17 +159,60 @@ async function startClassFromTeacher() {
     });
     if (!r.ok) throw new Error(await r.text());
     const session = await r.json();
-    const url = `${location.origin}/join?class=${session.id}`;
-    $("#t-result").innerHTML = `Class started. Students join at <span class="url">${url}</span>`;
-    const qr = $("#t-qr");
-    qr.innerHTML = `<img alt="QR code" src="/api/qr/${session.id}" />
-                    <div class="url">${url}</div>`;
+    state.classMeta = session;
+    state.classId = session.id;
+    showTeacherConsole(session);
   } catch (e) {
     $("#t-result").textContent = "Couldn't start class: " + e.message;
   }
 }
 
+function showTeacherConsole(session) {
+  show("screen-teacher");
+  setStatus("Live", "live");
+  const url = `${location.origin}/join?class=${session.id}`;
+  $("#teacher-meta").innerHTML =
+    `<strong>${escapeHtml(session.title)}</strong> · class id <code>${session.id}</code>`;
+  $("#teacher-qr").innerHTML =
+    `<img alt="QR code" src="/api/qr/${session.id}" /><div class="url">${url}</div>`;
+}
+
+async function injectCaption() {
+  const text = $("#t-line").value.trim();
+  if (!text) return;
+  const status = $("#t-inject-status");
+  status.textContent = "Sending…";
+  try {
+    const r = await fetch(`/api/class/${state.classId}/caption`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ text }),
+    });
+    if (!r.ok) throw new Error(await r.text());
+    $("#t-line").value = "";
+    status.textContent = "Sent. Translations streaming to subscribers.";
+  } catch (e) {
+    status.textContent = "Failed: " + e.message;
+  }
+}
+
+async function endClass() {
+  if (!state.classId) return;
+  if (!confirm("End the class? Students will lose the live stream.")) return;
+  try {
+    await fetch(`/api/class/${state.classId}/end`, { method: "POST" });
+    location.reload();
+  } catch (e) {
+    alert("Couldn't end class: " + e.message);
+  }
+}
+
 $("#t-start").addEventListener("click", startClassFromTeacher);
+$("#t-inject").addEventListener("click", injectCaption);
+$("#t-end").addEventListener("click", endClass);
+$("#t-line").addEventListener("keydown", (ev) => {
+  if (ev.key === "Enter" && (ev.metaKey || ev.ctrlKey)) injectCaption();
+});
 
 // ---- bootstrap --------------------------------------------------------------
 
@@ -178,38 +221,38 @@ function escapeHtml(s) {
 }
 
 async function bootstrap() {
-  // No class id in URL → check active or show no-class screen
-  if (!state.classId) {
-    try {
-      const r = await fetch("/api/class/active");
-      if (r.status === 204) {
-        show("screen-noclass");
-        setStatus("No class", "idle");
-        return;
-      }
-      const session = await r.json();
-      state.classId = session.id;
-      state.classMeta = session;
-    } catch (e) {
-      show("screen-noclass");
-      setStatus("Offline", "error");
-      return;
-    }
-  } else {
+  // ?class= present → student. Otherwise treat as teacher (or no-class screen).
+  if (state.classId) {
     try {
       const r = await fetch(`/api/class/${state.classId}`);
       if (r.ok) state.classMeta = (await r.json()).session;
     } catch {}
+    if (state.lang) {
+      renderLangGrid();
+      startStream();
+    } else {
+      renderLangGrid();
+      show("screen-lang");
+      setStatus("Pick a language", "idle");
+    }
+    return;
   }
 
-  if (state.lang && state.classId) {
-    // skip language picker for returning students
-    renderLangGrid();
-    startStream();
-  } else {
-    renderLangGrid();
-    show("screen-lang");
-    setStatus("Pick a language", "idle");
+  // No ?class= → teacher view. Show console if a class is live, otherwise the start form.
+  try {
+    const r = await fetch("/api/class/active");
+    if (r.status === 204) {
+      show("screen-noclass");
+      setStatus("No class", "idle");
+      return;
+    }
+    const session = await r.json();
+    state.classId = session.id;
+    state.classMeta = session;
+    showTeacherConsole(session);
+  } catch (e) {
+    show("screen-noclass");
+    setStatus("Offline", "error");
   }
 }
 

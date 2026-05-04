@@ -1,0 +1,5 @@
+# Optional: llama.cpp backend (alternate to Ollama).
+# Compiles from source on Pi 5 ARM64 — slow (10-20 min) and occasionally
+# fails. Use the Ollama backend unless you specifically need low-level
+# llama.cpp controls (custom samplers, thread pinning, etc).
+llama-cpp-python==0.3.2

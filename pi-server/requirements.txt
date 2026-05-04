@@ -1,11 +1,10 @@
+# Core server deps — pure Python or pre-built wheels on Pi 5 ARM64.
+# Ollama backend is the default and needs no native compilation here.
 fastapi==0.115.0
 uvicorn[standard]==0.32.0
 sse-starlette==2.1.3
-sounddevice==0.5.1
-numpy==2.1.3
-pywhispercpp==1.3.0
-llama-cpp-python==0.3.2
 pydantic==2.9.2
 pydantic-settings==2.6.1
 qrcode[pil]==8.0
 python-multipart==0.0.12
+numpy==2.1.3

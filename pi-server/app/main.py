@@ -36,7 +36,7 @@ from .config import settings
 from .models import Caption, ConfusionMark, StudyPack, Translation
 from .store import store
 from .studypack import build_study_pack
-from .translation import GemmaTranslator, TranslationBus, TranslationWorker
+from .translation import Translator, TranslationBus, TranslationWorker, make_translator
 
 log = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
@@ -45,15 +45,16 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name
 # ---- Globals wired up at startup --------------------------------------------------
 
 bus = TranslationBus()
-translator: GemmaTranslator | None = None
+translator: Translator | None = None
 worker: TranslationWorker | None = None
-transcriber = None  # WhisperTranscriber, lazy
+transcriber = None  # WhisperTranscriber or FakeTranscriber, lazy
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global translator, worker
-    translator = GemmaTranslator()
+    translator = make_translator()
+    log.info("translator backend: %s", type(translator).__name__)
     worker = TranslationWorker(
         translator=translator,
         bus=bus,
@@ -132,11 +133,15 @@ def start_class(req: StartClassReq):
         raise HTTPException(409, "A class is already in progress")
     session = store.start_class(title=req.title, teacher=req.teacher)
 
-    # Start audio + whisper. Lazy-import so a missing Pi-only dep doesn't crash
-    # the rest of the server during dev on laptops.
-    from .transcription import WhisperTranscriber
-
-    transcriber = WhisperTranscriber(on_caption=_on_caption)
+    if settings.fake:
+        from .fakes import FakeTranscriber
+        transcriber = FakeTranscriber(on_caption=_on_caption)
+        log.info("FAKE MODE: using FakeTranscriber (no whisper model loaded)")
+    else:
+        # Lazy-import so the missing Pi-only audio deps don't crash the
+        # server during dev on a laptop without portaudio installed.
+        from .transcription import WhisperTranscriber
+        transcriber = WhisperTranscriber(on_caption=_on_caption)
     transcriber.start()
     return session
 
@@ -305,6 +310,32 @@ def add_confusion(class_id: str, req: ConfusionReq):
     mark = ConfusionMark(student_id=req.student_id, caption_index=req.caption_index)
     store.add_confusion(class_id, mark)
     return mark
+
+
+# ---- Manual caption injection (for mic-less testing + teacher fallback) -------
+
+class InjectCaptionReq(BaseModel):
+    text: str
+
+
+@app.post("/api/class/{class_id}/caption")
+def inject_caption(class_id: str, req: InjectCaptionReq):
+    """Add a caption to the active class without going through whisper.
+
+    Two real uses:
+      1. Testing the translation pipeline without a USB mic on the Pi.
+      2. Teacher fallback when audio is unreliable — they can type the next
+         line and students still get translated captions.
+    """
+    if store.active() is None or store.active().id != class_id:
+        raise HTTPException(404, "Class is not active")
+    text = req.text.strip()
+    if not text:
+        raise HTTPException(400, "Empty caption")
+    from datetime import datetime, timezone
+    now = datetime.now(timezone.utc)
+    _on_caption(text, now, now)
+    return {"ok": True}
 
 
 # ---- Static PWA ----------------------------------------------------------------
