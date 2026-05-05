@@ -33,7 +33,7 @@ See [`docs/plans/2026-05-04-locallearning-design.md`](docs/plans/2026-05-04-loca
 
 - `pi-server/` — Python FastAPI server that runs on the Raspberry Pi 5
 - `pwa/` — Static student-facing web app (live captions, language picker)
-- `android-app/` — Kotlin Android app with on-device Gemma 4 E2B for offline Q&A
+- `mobile-app/` — Cross-platform Flutter app (iOS + Android) using Cactus to run Gemma 4 E2B on-device for offline Q&A
 - `docs/` — Design docs and demo materials
 
 ## Hardware
