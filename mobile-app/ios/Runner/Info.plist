@@ -58,6 +58,12 @@
 	</dict>
 	<key>NSLocalNetworkUsageDescription</key>
 	<string>LocalLearning needs to reach your classroom’s Raspberry Pi over local Wi-Fi to download today’s lecture.</string>
+	<!-- Bonjour service types we browse for. Required on iOS 14+ for
+	     multicast_dns to actually discover anything. -->
+	<key>NSBonjourServices</key>
+	<array>
+		<string>_locallearning._tcp</string>
+	</array>
 	<key>NSCameraUsageDescription</key>
 	<string>LocalLearning uses the camera to scan the QR code your teacher projects so you can join the class instantly.</string>
 	<key>NSMicrophoneUsageDescription</key>

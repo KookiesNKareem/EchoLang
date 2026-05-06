@@ -33,6 +33,7 @@ from sse_starlette.sse import EventSourceResponse
 
 from .bundle import build_bundle_zip
 from .config import settings
+from .discovery import get_advertiser, start_advertiser, stop_advertiser
 from .models import Caption, ConfusionMark, StudyPack, Translation
 from .store import store
 from .studypack import build_study_pack
@@ -66,11 +67,16 @@ async def lifespan(app: FastAPI):
     )
     await worker.start()
     log.info("translation worker started")
+    try:
+        start_advertiser()
+    except Exception as e:  # noqa: BLE001 — mDNS is best-effort; don't crash the server
+        log.warning("mDNS advertise failed (continuing without auto-discovery): %r", e)
     yield
     if worker is not None:
         await worker.stop()
     if transcriber is not None:
         transcriber.stop()
+    stop_advertiser()
 
 
 def _persist_translation(t: Translation) -> None:
@@ -157,8 +163,14 @@ def start_class(req: StartClassReq):
                 e,
             )
             transcriber = None
+            adv = get_advertiser()
+            if adv is not None:
+                adv.refresh()
             return session
     transcriber.start()
+    adv = get_advertiser()
+    if adv is not None:
+        adv.refresh()
     return session
 
 
@@ -171,6 +183,9 @@ def end_class(class_id: str):
     if transcriber is not None:
         transcriber.stop()
         transcriber = None
+    adv = get_advertiser()
+    if adv is not None:
+        adv.refresh()
     return session
 
 

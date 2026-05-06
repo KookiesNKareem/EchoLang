@@ -8,3 +8,8 @@ pydantic-settings==2.6.1
 qrcode[pil]==8.0
 python-multipart==0.0.12
 numpy==2.1.3
+# Note: mDNS advertising uses the Pi OS `avahi-publish-service` system tool
+# (sudo apt-get install -y avahi-utils). We deliberately don't use the
+# Python `zeroconf` package because it conflicts with the running Avahi
+# daemon for the multicast group socket.
+
