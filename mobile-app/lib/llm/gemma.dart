@@ -17,19 +17,21 @@ import '../data/models.dart';
 enum GemmaStatus { notReady, downloading, ready, error }
 
 class GemmaService {
-  /// Public, ungated mirror of Google's Gemma 4 E2B LiteRT model. We use a
-  /// community mirror so end-users don't need a HuggingFace account, license
-  /// acceptance, or read token — the original litert-community repo is
-  /// gated. Override at build time with --dart-define=MODEL_URL=... to point
-  /// to your own mirror (e.g. for production reliability).
+  /// Public, ungated MTP-enabled mirror of Gemma 4 E2B (LiteRT). MTP =
+  /// Multi-Token Prediction (Google blog post 2026-05): a tiny drafter
+  /// model rides along with the main weights and predicts 2-4 future
+  /// tokens at once, then the target verifies them in parallel. ~2x speedup
+  /// on Q&A + study-pack generation, zero accuracy loss because the target
+  /// model still does final verification.
   ///
-  /// Verified ungated 2026-05-05 with 11k+ downloads. If this URL ever
-  /// disappears, equivalent files exist at huggingworld/, guoziwei93/, and
-  /// the gated upstream litert-community/gemma-4-E2B-it-litert-lm.
+  /// Same file size (~2.58 GB) as the non-MTP variant since the drafter is
+  /// tiny. 64k context is more than enough for our lecture transcripts.
+  /// Plain (non-MTP) fallback if this disappears:
+  /// samirsayyed/gemma-4-E2B-it-litert-lm/resolve/main/gemma-4-E2B-it.litertlm
   static const String modelUrl = String.fromEnvironment(
     'MODEL_URL',
     defaultValue:
-        'https://huggingface.co/samirsayyed/gemma-4-E2B-it-litert-lm/resolve/main/gemma-4-E2B-it.litertlm',
+        'https://huggingface.co/metricspace/gemma4-E2B-it-litert-64k-mtp/resolve/main/model.litertlm',
   );
 
   /// Optional HF token. Only needed if MODEL_URL points to a gated repo.
