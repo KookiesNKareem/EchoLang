@@ -5,11 +5,10 @@
 // in the lectures list as if it had been downloaded from a Pi.
 
 import 'dart:async';
-import 'dart:io';
+import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
-import 'package:path_provider/path_provider.dart';
 import 'package:record/record.dart';
 import 'package:uuid/uuid.dart';
 
@@ -42,7 +41,11 @@ class _RecordScreenState extends State<RecordScreen> with SingleTickerProviderSt
   String? _statusMsg;
   Duration _elapsed = Duration.zero;
   Timer? _timer;
-  String? _audioPath;
+  // Raw PCM16 audio captured during recording. Cactus's STT pipeline
+  // expects a stream of these bytes; we collect them here, then hand
+  // off as a single Stream.value(...) at stop time.
+  final List<int> _audioBuffer = [];
+  StreamSubscription<List<int>>? _audioSub;
   DateTime? _startedAt;
 
   @override
@@ -71,21 +74,19 @@ class _RecordScreenState extends State<RecordScreen> with SingleTickerProviderSt
       });
       return;
     }
-    final tmp = await getTemporaryDirectory();
-    final path = '${tmp.path}/recording_${DateTime.now().millisecondsSinceEpoch}.wav';
-    await _recorder.start(
+    _audioBuffer.clear();
+    final stream = await _recorder.startStream(
       const RecordConfig(
-        encoder: AudioEncoder.wav,
+        encoder: AudioEncoder.pcm16bits,
         sampleRate: 16000,
         numChannels: 1,
       ),
-      path: path,
     );
+    _audioSub = stream.listen(_audioBuffer.addAll);
     setState(() {
       _phase = _Phase.recording;
       _statusMsg = null;
       _elapsed = Duration.zero;
-      _audioPath = path;
       _startedAt = DateTime.now();
     });
     _timer = Timer.periodic(const Duration(seconds: 1), (_) {
@@ -94,16 +95,17 @@ class _RecordScreenState extends State<RecordScreen> with SingleTickerProviderSt
   }
 
   Future<void> _stopRecording() async {
-    final path = await _recorder.stop();
+    await _recorder.stop();
+    await _audioSub?.cancel();
+    _audioSub = null;
     _timer?.cancel();
-    if (path == null) {
+    if (_audioBuffer.isEmpty) {
       setState(() {
         _phase = _Phase.error;
-        _statusMsg = 'Recording produced no audio file.';
+        _statusMsg = 'Recording captured no audio.';
       });
       return;
     }
-    _audioPath = path;
     await _processRecording();
   }
 
@@ -120,7 +122,9 @@ class _RecordScreenState extends State<RecordScreen> with SingleTickerProviderSt
       });
 
       setState(() => _statusMsg = 'Transcribing your lecture…');
-      final transcript = await widget.whisper.transcribeFile(_audioPath!);
+      final audio = Uint8List.fromList(_audioBuffer);
+      _audioBuffer.clear();
+      final transcript = await widget.whisper.transcribeBytes(audio);
 
       setState(() {
         _phase = _Phase.summarizing;
@@ -154,7 +158,6 @@ class _RecordScreenState extends State<RecordScreen> with SingleTickerProviderSt
       });
       context.pop();
       context.push('/lecture/${Uri.encodeComponent(ref.dir.path)}');
-      try { await File(_audioPath!).delete(); } catch (_) {}
     } catch (e) {
       if (!mounted) return;
       setState(() {

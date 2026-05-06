@@ -4,7 +4,7 @@
 // fully locally so the user gets a transcript + study pack + Q&A even with
 // no Pi and no internet.
 
-import 'dart:io';
+import 'dart:typed_data';
 
 import 'package:cactus/cactus.dart';
 
@@ -71,29 +71,33 @@ class WhisperService {
     }
   }
 
-  /// Transcribe a WAV file at [audioFilePath]. Returns the full transcript.
-  /// Throws [Exception] if the file is empty or the model returns no text.
-  Future<String> transcribeFile(String audioFilePath) async {
+  /// Transcribe raw 16-bit PCM audio (mono, 16kHz) from a [Uint8List].
+  ///
+  /// The Cactus iOS pipeline expects *streamed* raw PCM, not a WAV file.
+  /// Passing a WAV file via transcribe(audioFilePath:) errors with
+  /// "transcription failed code -1" — the underlying engine doesn't parse
+  /// the WAV header. Use AudioRecorder.startStream(AudioEncoder.pcm16bits)
+  /// to feed this method.
+  Future<String> transcribeBytes(Uint8List audio) async {
     if (_status != WhisperStatus.ready || _stt == null) {
       throw StateError('Whisper not ready (status=$_status)');
     }
-    final f = File(audioFilePath);
-    if (!await f.exists()) {
-      throw Exception('Audio file missing: $audioFilePath');
-    }
-    final size = await f.length();
-    if (size < 4096) {
-      // <4KB of WAV is basically the header — no audio captured.
+    if (audio.length < 16000 * 2) {
+      // <1 second of mono PCM16 at 16kHz = 32 KB. Anything less is silence.
       throw Exception(
-        'Audio file too small (${size}B) — microphone may have been muted '
-        'or no sound was captured.',
+        'Audio too short (${audio.length} bytes) — microphone may have been '
+        'muted or no sound captured.',
       );
     }
-    final result = await _stt!.transcribe(audioFilePath: audioFilePath);
+    final streamed = await _stt!.transcribeStream(audioStream: Stream.value(audio));
+    // Drain the token stream so the result completer fires.
+    final tokens = StringBuffer();
+    streamed.stream.listen((t) => tokens.write(t));
+    final result = await streamed.result;
     if (!result.success) {
       throw Exception('Whisper failed: ${result.errorMessage ?? "unknown error"}');
     }
-    final text = result.text.trim();
+    final text = (result.text.isNotEmpty ? result.text : tokens.toString()).trim();
     if (text.isEmpty) {
       throw Exception(
         'Whisper produced an empty transcript. The audio probably had no '
