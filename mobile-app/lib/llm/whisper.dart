@@ -15,9 +15,12 @@ class WhisperService {
   /// org/name. The full set as of v1.3 (verified against the SDK's
   /// /api/voice-models response): whisper-tiny (30MB), whisper-base (57MB),
   /// whisper-small (192MB), whisper-medium (615MB), and *-pro variants with
-  /// slightly higher accuracy at ~25% larger size. Tiny keeps the first-
-  /// install download under a minute on a phone connection.
-  static const String modelId = 'whisper-tiny';
+  /// slightly higher accuracy at ~25% larger size.
+  ///
+  /// Bumped from tiny to base after seeing tiny truncate a 9-second
+  /// recording to "the". Base is still small enough to finish first-install
+  /// download in under a minute on phone WiFi but materially more reliable.
+  static const String modelId = 'whisper-base';
 
   // Lazy: same reasoning as GemmaService — instantiating CactusSTT runs
   // native-side init that can crash a release-mode iOS build at launch.
@@ -97,7 +100,8 @@ class WhisperService {
     if (!result.success) {
       throw Exception('Whisper failed: ${result.errorMessage ?? "unknown error"}');
     }
-    final text = (result.text.isNotEmpty ? result.text : tokens.toString()).trim();
+    final raw = result.text.isNotEmpty ? result.text : tokens.toString();
+    final text = _stripWhisperTokens(raw).trim();
     if (text.isEmpty) {
       throw Exception(
         'Whisper produced an empty transcript. The audio probably had no '
@@ -113,4 +117,11 @@ class WhisperService {
     _stt = null;
     _status = WhisperStatus.notReady;
   }
+
+  /// Strip Whisper's internal special tokens that occasionally leak through
+  /// the streaming decoder despite the <|notimestamps|> prompt. Examples:
+  /// <|18.02|> (timestamp), <|startoftranscript|>, <|en|>, <|transcribe|>.
+  static final RegExp _specialToken = RegExp(r'<\|[^|>]*\|>');
+  String _stripWhisperTokens(String s) =>
+      s.replaceAll(_specialToken, '').replaceAll(RegExp(r'\s+'), ' ');
 }
