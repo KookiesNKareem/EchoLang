@@ -9,12 +9,13 @@ import 'package:cactus/cactus.dart';
 enum WhisperStatus { notReady, downloading, ready, error }
 
 class WhisperService {
-  /// Cactus catalog model id. Full HuggingFace org/name form is most
-  /// resilient across SDK versions — the short alias "whisper-tiny" failed
-  /// at runtime with a "voice model not found" error on iOS. The pre-
-  /// quantized weights live at huggingface.co/Cactus-Compute/whisper-tiny.
-  /// Tiny is ~75MB and English-best, multilingual ok.
-  static const String modelId = 'Cactus-Compute/whisper-tiny';
+  /// Cactus's voice-model registry indexes by bare slug, not by HuggingFace
+  /// org/name. The full set as of v1.3 (verified against the SDK's
+  /// /api/voice-models response): whisper-tiny (30MB), whisper-base (57MB),
+  /// whisper-small (192MB), whisper-medium (615MB), and *-pro variants with
+  /// slightly higher accuracy at ~25% larger size. Tiny keeps the first-
+  /// install download under a minute on a phone connection.
+  static const String modelId = 'whisper-tiny';
 
   // Lazy: same reasoning as GemmaService — instantiating CactusSTT runs
   // native-side init that can crash a release-mode iOS build at launch.
