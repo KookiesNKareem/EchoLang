@@ -22,7 +22,9 @@ class _LecturesScreenState extends State<LecturesScreen> {
   }
 
   void _refresh() {
-    setState(() => _future = widget.store.list());
+    setState(() {
+      _future = widget.store.list();
+    });
   }
 
   @override

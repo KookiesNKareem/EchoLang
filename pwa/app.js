@@ -207,11 +207,36 @@ async function endClass() {
   }
 }
 
+function showProjectorQR() {
+  if (!state.classMeta) return;
+  const session = state.classMeta;
+  const url = `${location.origin}/join?class=${session.id}`;
+  $("#proj-meta").textContent = session.title;
+  $("#proj-qr").innerHTML = `<img alt="QR code" src="/api/qr/${session.id}" />`;
+  $("#proj-url").textContent = url;
+  show("screen-projector");
+  if (document.documentElement.requestFullscreen) {
+    document.documentElement.requestFullscreen().catch(() => {});
+  }
+}
+
+function exitProjectorQR() {
+  if (document.fullscreenElement) document.exitFullscreen().catch(() => {});
+  showTeacherConsole(state.classMeta);
+}
+
 $("#t-start").addEventListener("click", startClassFromTeacher);
 $("#t-inject").addEventListener("click", injectCaption);
 $("#t-end").addEventListener("click", endClass);
+$("#t-fullscreen").addEventListener("click", showProjectorQR);
+$("#t-exit-fullscreen").addEventListener("click", exitProjectorQR);
 $("#t-line").addEventListener("keydown", (ev) => {
   if (ev.key === "Enter" && (ev.metaKey || ev.ctrlKey)) injectCaption();
+});
+document.addEventListener("keydown", (ev) => {
+  if (ev.key === "Escape" && !$("#screen-projector").classList.contains("hidden")) {
+    exitProjectorQR();
+  }
 });
 
 // ---- bootstrap --------------------------------------------------------------

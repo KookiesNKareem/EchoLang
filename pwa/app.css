@@ -171,3 +171,42 @@ button.primary:disabled { opacity: 0.4; cursor: not-allowed; }
   width: 240px; height: 240px;
 }
 .qr .url { font-family: ui-monospace, monospace; color: var(--accent); }
+
+/* Bigger QR for the in-class teacher console (laptop / classroom screen) */
+.qr-big {
+  margin: 24px 0;
+  display: flex; flex-direction: column; align-items: center; gap: 12px;
+}
+.qr-big img {
+  background: white; padding: 16px; border-radius: 12px;
+  image-rendering: pixelated;
+  width: min(80vw, 380px); height: min(80vw, 380px);
+}
+.qr-big .url { font-family: ui-monospace, monospace; color: var(--accent); font-size: 14px; }
+
+button.ghost {
+  background: var(--card); color: var(--fg);
+  border: 1px solid var(--line); border-radius: 8px;
+  padding: 12px; width: 100%; cursor: pointer;
+  font: inherit; font-size: 14px;
+}
+button.ghost:hover { background: #1c1c1c; }
+
+/* Fullscreen QR projection mode — for putting on the classroom whiteboard */
+.projector {
+  position: fixed; inset: 0;
+  background: white; color: black;
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+  gap: 24px; padding: 32px;
+  z-index: 100;
+}
+.proj-meta { font-size: 28px; font-weight: 600; color: #111; text-align: center; }
+.proj-qr img { width: min(70vh, 70vw); height: min(70vh, 70vw); image-rendering: pixelated; }
+.proj-url { font-family: ui-monospace, monospace; font-size: 28px; color: #444; }
+.proj-help { font-size: 18px; color: #666; max-width: 600px; text-align: center; }
+.proj-exit {
+  position: absolute; top: 16px; right: 16px;
+  background: #eee; color: #333; border: none;
+  width: 44px; height: 44px; border-radius: 22px;
+  font-size: 24px; cursor: pointer;
+}
