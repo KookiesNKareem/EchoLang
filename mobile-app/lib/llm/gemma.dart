@@ -7,7 +7,11 @@
 // All Q&A is grounded in the lecture transcript injected as system context
 // — the model answers about *this* lecture, not its general knowledge.
 
+import 'dart:convert';
+
 import 'package:cactus/cactus.dart';
+
+import '../data/models.dart';
 
 /// Status of the on-device model.
 enum GemmaStatus { notReady, downloading, ready, error }
@@ -78,7 +82,76 @@ class GemmaService {
     return result.response.trim();
   }
 
+  /// Generate a study pack from a transcript, fully on-device.
+  ///
+  /// Used in personal record mode (no Pi). Asks Gemma for summary +
+  /// key terms + practice questions in a single JSON response.
+  Future<StudyPack> generateStudyPack({required String transcript, String lang = 'en'}) async {
+    if (_status != GemmaStatus.ready) {
+      throw StateError('Gemma not ready (status=$_status)');
+    }
+    final trimmed = _trimContext(transcript);
+    final prompt = _studyPackPrompt(trimmed);
+    final result = await _lm.generateCompletion(messages: [
+      ChatMessage(role: 'user', content: prompt),
+    ]);
+    if (!result.success) {
+      throw Exception('Gemma generation failed');
+    }
+    final json = _extractJson(result.response);
+    return StudyPack(
+      lang: lang,
+      summary: (json['summary'] as String?) ?? result.response.trim(),
+      keyTerms: ((json['key_terms'] as List?) ?? const [])
+          .whereType<Map>()
+          .map((m) => KeyTerm(
+                term: (m['term'] as String?) ?? '',
+                definition: (m['definition'] as String?) ?? '',
+              ))
+          .toList(),
+      practiceQuestions: ((json['practice_questions'] as List?) ?? const [])
+          .whereType<String>()
+          .toList(),
+    );
+  }
+
   void unload() => _lm.unload();
+
+  String _studyPackPrompt(String transcript) => '''
+You are an academic tutor. Below is a transcript of a recorded lecture.
+Produce a study pack with three sections, in JSON.
+
+Transcript:
+"""
+$transcript
+"""
+
+Respond with strict JSON in this exact shape (no commentary, no code fence):
+{
+  "summary": "3-5 sentences summarizing what was taught",
+  "key_terms": [
+    {"term": "term name", "definition": "one-sentence definition"}
+  ],
+  "practice_questions": [
+    "first practice question",
+    "second practice question"
+  ]
+}
+
+Use 5-10 key_terms and 5-8 practice_questions.
+
+JSON:
+''';
+
+  Map<String, dynamic> _extractJson(String raw) {
+    final match = RegExp(r'\{.*\}', dotAll: true).firstMatch(raw);
+    if (match == null) return const {};
+    try {
+      return jsonDecode(match.group(0)!) as Map<String, dynamic>;
+    } catch (_) {
+      return const {};
+    }
+  }
 
   String _trimContext(String ctx) {
     if (ctx.length <= 6000) return ctx;

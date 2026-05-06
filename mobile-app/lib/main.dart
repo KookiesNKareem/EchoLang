@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 
 import 'data/bundle_store.dart';
 import 'llm/gemma.dart';
+import 'llm/whisper.dart';
 import 'routes.dart';
 import 'theme.dart';
 
@@ -19,10 +20,12 @@ class LocalLearningApp extends StatefulWidget {
 class _LocalLearningAppState extends State<LocalLearningApp> {
   final _store = BundleStore();
   final _gemma = GemmaService();
+  final _whisper = WhisperService();
 
   @override
   void dispose() {
     _gemma.unload();
+    _whisper.unload();
     super.dispose();
   }
 
@@ -32,7 +35,7 @@ class _LocalLearningAppState extends State<LocalLearningApp> {
       title: 'LocalLearning',
       debugShowCheckedModeBanner: false,
       theme: buildTheme(),
-      routerConfig: buildRouter(store: _store, gemma: _gemma),
+      routerConfig: buildRouter(store: _store, gemma: _gemma, whisper: _whisper),
     );
   }
 }

@@ -31,13 +31,32 @@ class _LecturesScreenState extends State<LecturesScreen> {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(title: const Text('My lectures')),
-      floatingActionButton: FloatingActionButton.extended(
-        onPressed: () async {
-          await context.push('/connect');
-          _refresh();
-        },
-        icon: const Icon(Icons.add),
-        label: const Text('Add lecture'),
+      floatingActionButton: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.end,
+        children: [
+          FloatingActionButton.extended(
+            heroTag: 'record',
+            onPressed: () async {
+              await context.push('/record');
+              _refresh();
+            },
+            icon: const Icon(Icons.mic),
+            label: const Text('Record now'),
+          ),
+          const SizedBox(height: 12),
+          FloatingActionButton.extended(
+            heroTag: 'connect',
+            onPressed: () async {
+              await context.push('/connect');
+              _refresh();
+            },
+            icon: const Icon(Icons.qr_code_scanner),
+            label: const Text('Join classroom'),
+            backgroundColor: Theme.of(context).colorScheme.surfaceContainerHighest,
+            foregroundColor: Theme.of(context).colorScheme.onSurface,
+          ),
+        ],
       ),
       body: FutureBuilder<List<LectureRef>>(
         future: _future,

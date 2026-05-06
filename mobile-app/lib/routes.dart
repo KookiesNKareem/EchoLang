@@ -2,12 +2,18 @@ import 'package:go_router/go_router.dart';
 
 import 'data/bundle_store.dart';
 import 'llm/gemma.dart';
+import 'llm/whisper.dart';
 import 'screens/connect_screen.dart';
 import 'screens/lecture_screen.dart';
 import 'screens/lectures_screen.dart';
 import 'screens/qa_screen.dart';
+import 'screens/record_screen.dart';
 
-GoRouter buildRouter({required BundleStore store, required GemmaService gemma}) {
+GoRouter buildRouter({
+  required BundleStore store,
+  required GemmaService gemma,
+  required WhisperService whisper,
+}) {
   return GoRouter(
     initialLocation: '/',
     routes: [
@@ -18,7 +24,6 @@ GoRouter buildRouter({required BundleStore store, required GemmaService gemma}) 
       GoRoute(
         path: '/connect',
         builder: (_, state) {
-          // Optional deep-link prefill: /connect?host=...&class=...&lang=...
           final qp = state.uri.queryParameters;
           return ConnectScreen(
             store: store,
@@ -27,6 +32,10 @@ GoRouter buildRouter({required BundleStore store, required GemmaService gemma}) 
             prefillLang: qp['lang'],
           );
         },
+      ),
+      GoRoute(
+        path: '/record',
+        builder: (_, __) => RecordScreen(store: store, whisper: whisper, gemma: gemma),
       ),
       GoRoute(
         path: '/lecture/:dirPath',
