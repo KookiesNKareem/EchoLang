@@ -3,10 +3,19 @@ import 'package:go_router/go_router.dart';
 
 import '../data/bundle_store.dart';
 import '../data/models.dart';
+import '../llm/gemma.dart';
+import '../llm/whisper.dart';
 
 class LecturesScreen extends StatefulWidget {
   final BundleStore store;
-  const LecturesScreen({super.key, required this.store});
+  final GemmaService gemma;
+  final WhisperService whisper;
+  const LecturesScreen({
+    super.key,
+    required this.store,
+    required this.gemma,
+    required this.whisper,
+  });
 
   @override
   State<LecturesScreen> createState() => _LecturesScreenState();
@@ -15,10 +24,33 @@ class LecturesScreen extends StatefulWidget {
 class _LecturesScreenState extends State<LecturesScreen> {
   late Future<List<LectureRef>> _future;
 
+  // Latest progress from each model's pre-load. Null = not started.
+  double? _gemmaProgress;
+  String? _gemmaStatus;
+  double? _whisperProgress;
+  String? _whisperStatus;
+
   @override
   void initState() {
     super.initState();
     _future = widget.store.list();
+    // Subscribe to in-flight downloads. ensureReady is memoized, so this
+    // attaches a listener to the existing pre-load started in main.dart
+    // rather than kicking off a second one.
+    widget.gemma.ensureReady(onProgress: (p, status) {
+      if (!mounted) return;
+      setState(() {
+        _gemmaProgress = p;
+        _gemmaStatus = status;
+      });
+    }).catchError((_) {});
+    widget.whisper.ensureReady(onProgress: (p, status) {
+      if (!mounted) return;
+      setState(() {
+        _whisperProgress = p;
+        _whisperStatus = status;
+      });
+    }).catchError((_) {});
   }
 
   void _refresh() {
@@ -26,6 +58,10 @@ class _LecturesScreenState extends State<LecturesScreen> {
       _future = widget.store.list();
     });
   }
+
+  bool get _showSetup =>
+      widget.gemma.status != GemmaStatus.ready ||
+      widget.whisper.status != WhisperStatus.ready;
 
   @override
   Widget build(BuildContext context) {
@@ -60,6 +96,16 @@ class _LecturesScreenState extends State<LecturesScreen> {
                                 color: Colors.white.withValues(alpha: 0.6),
                               ),
                         ),
+                        if (_showSetup) ...[
+                          const SizedBox(height: 16),
+                          _SetupBanner(
+                            gemmaStatus: widget.gemma.status,
+                            gemmaProgress: _gemmaProgress,
+                            gemmaMessage: _gemmaStatus,
+                            whisperStatus: widget.whisper.status,
+                            whisperProgress: _whisperProgress,
+                          ),
+                        ],
                       ],
                     ),
                   ),
@@ -228,6 +274,162 @@ class _LectureCard extends StatelessWidget {
           ),
         ),
       ),
+    );
+  }
+}
+
+class _SetupBanner extends StatelessWidget {
+  final GemmaStatus gemmaStatus;
+  final double? gemmaProgress;
+  final String? gemmaMessage;
+  final WhisperStatus whisperStatus;
+  final double? whisperProgress;
+
+  const _SetupBanner({
+    required this.gemmaStatus,
+    required this.gemmaProgress,
+    required this.gemmaMessage,
+    required this.whisperStatus,
+    required this.whisperProgress,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
+    final gemmaError = gemmaStatus == GemmaStatus.error;
+    final whisperError = whisperStatus == WhisperStatus.error;
+    final anyError = gemmaError || whisperError;
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                Container(
+                  width: 32, height: 32,
+                  decoration: BoxDecoration(
+                    color: anyError
+                        ? cs.error.withValues(alpha: 0.15)
+                        : cs.primary.withValues(alpha: 0.15),
+                    borderRadius: BorderRadius.circular(8),
+                  ),
+                  child: Icon(
+                    anyError ? Icons.warning_amber_rounded : Icons.cloud_download_rounded,
+                    color: anyError ? cs.error : cs.primary,
+                    size: 18,
+                  ),
+                ),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: Text(
+                    anyError ? 'Setup needs attention' : 'Setting up offline AI',
+                    style: Theme.of(context).textTheme.titleSmall,
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 12),
+            _ModelRow(
+              label: 'Gemma 4 E2B',
+              subtitle: 'Reasoning & study packs · ~2.6 GB',
+              status: gemmaStatus.name,
+              progress: gemmaProgress,
+              isReady: gemmaStatus == GemmaStatus.ready,
+              isError: gemmaError,
+              errorMessage: gemmaError ? gemmaMessage : null,
+            ),
+            const SizedBox(height: 12),
+            _ModelRow(
+              label: 'Whisper Tiny',
+              subtitle: 'On-device transcription · ~30 MB',
+              status: whisperStatus.name,
+              progress: whisperProgress,
+              isReady: whisperStatus == WhisperStatus.ready,
+              isError: whisperError,
+              errorMessage: null,
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _ModelRow extends StatelessWidget {
+  final String label;
+  final String subtitle;
+  final String status;
+  final double? progress;
+  final bool isReady;
+  final bool isError;
+  final String? errorMessage;
+  const _ModelRow({
+    required this.label,
+    required this.subtitle,
+    required this.status,
+    required this.progress,
+    required this.isReady,
+    required this.isError,
+    required this.errorMessage,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Row(
+          children: [
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(label, style: Theme.of(context).textTheme.bodyMedium),
+                  Text(
+                    subtitle,
+                    style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                          color: Colors.white.withValues(alpha: 0.5),
+                        ),
+                  ),
+                ],
+              ),
+            ),
+            const SizedBox(width: 12),
+            if (isReady)
+              Icon(Icons.check_circle_rounded, color: cs.primary, size: 20)
+            else if (isError)
+              Icon(Icons.error_outline_rounded, color: cs.error, size: 20)
+            else
+              Text(
+                progress != null ? '${(progress! * 100).toStringAsFixed(0)}%' : '…',
+                style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                      color: Colors.white.withValues(alpha: 0.7),
+                      fontFeatures: const [FontFeature.tabularFigures()],
+                    ),
+              ),
+          ],
+        ),
+        const SizedBox(height: 6),
+        ClipRRect(
+          borderRadius: BorderRadius.circular(4),
+          child: LinearProgressIndicator(
+            value: isReady ? 1 : (isError ? 0 : progress),
+            minHeight: 4,
+            backgroundColor: Colors.white.withValues(alpha: 0.06),
+            valueColor: AlwaysStoppedAnimation(isError ? cs.error : cs.primary),
+          ),
+        ),
+        if (errorMessage != null) ...[
+          const SizedBox(height: 6),
+          Text(
+            errorMessage!,
+            style: Theme.of(context).textTheme.bodySmall?.copyWith(color: cs.error),
+          ),
+        ],
+      ],
     );
   }
 }

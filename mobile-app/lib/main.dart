@@ -25,12 +25,15 @@ class _LocalLearningAppState extends State<LocalLearningApp> {
   @override
   void initState() {
     super.initState();
-    // Background pre-load: after the first frame renders, kick off the
-    // Whisper download so by the time the user taps "Record now" the model
-    // is ready (or close to it). Wrapped in Future so we don't block the
-    // initial render; failures are silent — the Record screen surfaces them.
+    // Background pre-load both models after the first frame renders so by
+    // the time the user taps Record now or opens Q&A everything is ready
+    // (or actively downloading with a visible progress banner). Whisper is
+    // ~30MB; Gemma 4 E2B is ~2.6GB so the user sees real progress before
+    // they ever touch a record button. Failures are silent here — surfaced
+    // in the screens that actually need the model.
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      _whisper.ensureReady().catchError((_) {/* surfaced in Record screen */});
+      _whisper.ensureReady().catchError((_) {});
+      _gemma.ensureReady().catchError((_) {});
     });
   }
 

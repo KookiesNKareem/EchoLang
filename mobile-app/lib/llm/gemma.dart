@@ -64,7 +64,13 @@ class GemmaService {
       // to set up its service registry. Pass an empty string when public.
       await FlutterGemma.initialize(huggingFaceToken: hfToken.isEmpty ? null : hfToken);
       // installModel is a no-op if the model is already on disk.
-      final builder = FlutterGemma.installModel(modelType: ModelType.gemma4);
+      // fileType MUST be litertlm for our .litertlm file — flutter_gemma
+      // defaults to .task and routes through MediaPipe's parser, which
+      // would crash on init when it sees the litertlm container.
+      final builder = FlutterGemma.installModel(
+        modelType: ModelType.gemma4,
+        fileType: ModelFileType.litertlm,
+      );
       final fromNetwork = hfToken.isEmpty
           ? builder.fromNetwork(modelUrl)
           : builder.fromNetwork(modelUrl, token: hfToken);

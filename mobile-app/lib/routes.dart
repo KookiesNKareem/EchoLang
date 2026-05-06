@@ -19,7 +19,7 @@ GoRouter buildRouter({
     routes: [
       GoRoute(
         path: '/',
-        builder: (_, __) => LecturesScreen(store: store),
+        builder: (_, __) => LecturesScreen(store: store, gemma: gemma, whisper: whisper),
       ),
       GoRoute(
         path: '/connect',
