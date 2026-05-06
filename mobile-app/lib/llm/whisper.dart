@@ -52,7 +52,10 @@ class WhisperService {
           if (isError) _status = WhisperStatus.error;
         },
       );
-      await _stt!.initializeModel();
+      // initializeModel() without params defaults to "qwen3-0.6" (CactusInitParams
+      // default) and tries to load that — which doesn't exist as a voice model.
+      // Have to pass the model id explicitly here.
+      await _stt!.initializeModel(params: CactusInitParams(model: modelId));
       _status = WhisperStatus.ready;
       _statusMessage = 'Whisper ready';
     } catch (e) {

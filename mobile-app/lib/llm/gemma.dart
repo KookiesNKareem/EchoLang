@@ -60,7 +60,9 @@ class GemmaService {
           if (isError) _status = GemmaStatus.error;
         },
       );
-      await _lm!.initializeModel();
+      // Without params, initializeModel defaults to CactusInitParams's
+      // qwen3-0.6 default — same bug as WhisperService.
+      await _lm!.initializeModel(params: CactusInitParams(model: modelId));
       _status = GemmaStatus.ready;
       _statusMessage = 'Model ready';
     } catch (e) {
