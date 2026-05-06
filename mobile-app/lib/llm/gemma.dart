@@ -84,10 +84,20 @@ class GemmaService {
             }
           })
           .install();
+      // Download is done but model isn't usable yet — getActiveModel maps a
+      // 2.6 GB file into memory, can take 10-30s on iPhone. Broadcast a
+      // distinct status so the banner doesn't sit at 100% silently.
+      _statusMessage = 'Loading Gemma 4 into memory…';
+      for (final l in _listeners) {
+        l(null, _statusMessage!);
+      }
       _model = await FlutterGemma.getActiveModel(maxTokens: 2048);
       _chat = await _model!.createChat();
       _status = GemmaStatus.ready;
       _statusMessage = 'Gemma 4 ready';
+      for (final l in _listeners) {
+        l(1.0, _statusMessage!);
+      }
     } catch (e) {
       _status = GemmaStatus.error;
       _statusMessage = 'Failed to load Gemma 4: $e';

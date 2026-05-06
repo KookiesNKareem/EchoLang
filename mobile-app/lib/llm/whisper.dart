@@ -4,6 +4,8 @@
 // fully locally so the user gets a transcript + study pack + Q&A even with
 // no Pi and no internet.
 
+import 'dart:io';
+
 import 'package:cactus/cactus.dart';
 
 enum WhisperStatus { notReady, downloading, ready, error }
@@ -58,6 +60,9 @@ class WhisperService {
       await _stt!.initializeModel(params: CactusInitParams(model: modelId));
       _status = WhisperStatus.ready;
       _statusMessage = 'Whisper ready';
+      for (final l in _listeners) {
+        l(1.0, _statusMessage!);
+      }
     } catch (e) {
       _status = WhisperStatus.error;
       _statusMessage = 'Failed to load Whisper: $e';
@@ -67,23 +72,36 @@ class WhisperService {
   }
 
   /// Transcribe a WAV file at [audioFilePath]. Returns the full transcript.
+  /// Throws [Exception] if the file is empty or the model returns no text.
   Future<String> transcribeFile(String audioFilePath) async {
     if (_status != WhisperStatus.ready || _stt == null) {
       throw StateError('Whisper not ready (status=$_status)');
     }
+    final f = File(audioFilePath);
+    if (!await f.exists()) {
+      throw Exception('Audio file missing: $audioFilePath');
+    }
+    final size = await f.length();
+    if (size < 4096) {
+      // <4KB of WAV is basically the header — no audio captured.
+      throw Exception(
+        'Audio file too small (${size}B) — microphone may have been muted '
+        'or no sound was captured.',
+      );
+    }
     final result = await _stt!.transcribe(audioFilePath: audioFilePath);
-    return _extractText(result);
-  }
-
-  /// Some Cactus versions return a typed result with .text, others a String.
-  /// Handle both shapes defensively.
-  String _extractText(dynamic result) {
-    if (result is String) return result.trim();
-    try {
-      final t = (result as dynamic).text;
-      if (t is String) return t.trim();
-    } catch (_) {}
-    return result.toString().trim();
+    if (!result.success) {
+      throw Exception('Whisper failed: ${result.errorMessage ?? "unknown error"}');
+    }
+    final text = result.text.trim();
+    if (text.isEmpty) {
+      throw Exception(
+        'Whisper produced an empty transcript. The audio probably had no '
+        'recognizable speech, or whisper-tiny missed it. Try recording '
+        'closer to the speaker, or upgrade to whisper-base.',
+      );
+    }
+    return text;
   }
 
   void unload() {

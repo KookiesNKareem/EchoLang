@@ -24,11 +24,11 @@ class LecturesScreen extends StatefulWidget {
 class _LecturesScreenState extends State<LecturesScreen> {
   late Future<List<LectureRef>> _future;
 
-  // Latest progress from each model's pre-load. Null = not started.
+  // Latest progress from each model's pre-load. Null = not started yet.
   double? _gemmaProgress;
-  String? _gemmaStatus;
+  String? _gemmaMessage;
   double? _whisperProgress;
-  String? _whisperStatus;
+  String? _whisperMessage;
 
   @override
   void initState() {
@@ -36,21 +36,29 @@ class _LecturesScreenState extends State<LecturesScreen> {
     _future = widget.store.list();
     // Subscribe to in-flight downloads. ensureReady is memoized, so this
     // attaches a listener to the existing pre-load started in main.dart
-    // rather than kicking off a second one.
-    widget.gemma.ensureReady(onProgress: (p, status) {
-      if (!mounted) return;
-      setState(() {
-        _gemmaProgress = p;
-        _gemmaStatus = status;
-      });
-    }).catchError((_) {});
-    widget.whisper.ensureReady(onProgress: (p, status) {
-      if (!mounted) return;
-      setState(() {
-        _whisperProgress = p;
-        _whisperStatus = status;
-      });
-    }).catchError((_) {});
+    // rather than kicking off a second one. The .then() rebuilds when the
+    // future completes so the banner re-evaluates _showSetup and the row
+    // for that model disappears.
+    widget.gemma
+        .ensureReady(onProgress: (p, status) {
+          if (!mounted) return;
+          setState(() {
+            _gemmaProgress = p;
+            _gemmaMessage = status;
+          });
+        })
+        .then((_) { if (mounted) setState(() {}); })
+        .catchError((_) { if (mounted) setState(() {}); });
+    widget.whisper
+        .ensureReady(onProgress: (p, status) {
+          if (!mounted) return;
+          setState(() {
+            _whisperProgress = p;
+            _whisperMessage = status;
+          });
+        })
+        .then((_) { if (mounted) setState(() {}); })
+        .catchError((_) { if (mounted) setState(() {}); });
   }
 
   void _refresh() {
@@ -101,9 +109,10 @@ class _LecturesScreenState extends State<LecturesScreen> {
                           _SetupBanner(
                             gemmaStatus: widget.gemma.status,
                             gemmaProgress: _gemmaProgress,
-                            gemmaMessage: _gemmaStatus,
+                            gemmaMessage: _gemmaMessage,
                             whisperStatus: widget.whisper.status,
                             whisperProgress: _whisperProgress,
+                            whisperMessage: _whisperMessage,
                           ),
                         ],
                       ],
@@ -284,6 +293,7 @@ class _SetupBanner extends StatelessWidget {
   final String? gemmaMessage;
   final WhisperStatus whisperStatus;
   final double? whisperProgress;
+  final String? whisperMessage;
 
   const _SetupBanner({
     required this.gemmaStatus,
@@ -291,6 +301,7 @@ class _SetupBanner extends StatelessWidget {
     required this.gemmaMessage,
     required this.whisperStatus,
     required this.whisperProgress,
+    required this.whisperMessage,
   });
 
   @override
@@ -299,6 +310,8 @@ class _SetupBanner extends StatelessWidget {
     final gemmaError = gemmaStatus == GemmaStatus.error;
     final whisperError = whisperStatus == WhisperStatus.error;
     final anyError = gemmaError || whisperError;
+    final showGemma = gemmaStatus != GemmaStatus.ready;
+    final showWhisper = whisperStatus != WhisperStatus.ready;
     return Card(
       child: Padding(
         padding: const EdgeInsets.all(16),
@@ -330,26 +343,28 @@ class _SetupBanner extends StatelessWidget {
                 ),
               ],
             ),
-            const SizedBox(height: 12),
-            _ModelRow(
-              label: 'Gemma 4 E2B',
-              subtitle: 'Reasoning & study packs · ~2.6 GB',
-              status: gemmaStatus.name,
-              progress: gemmaProgress,
-              isReady: gemmaStatus == GemmaStatus.ready,
-              isError: gemmaError,
-              errorMessage: gemmaError ? gemmaMessage : null,
-            ),
-            const SizedBox(height: 12),
-            _ModelRow(
-              label: 'Whisper Tiny',
-              subtitle: 'On-device transcription · ~30 MB',
-              status: whisperStatus.name,
-              progress: whisperProgress,
-              isReady: whisperStatus == WhisperStatus.ready,
-              isError: whisperError,
-              errorMessage: null,
-            ),
+            if (showGemma) ...[
+              const SizedBox(height: 12),
+              _ModelRow(
+                label: 'Gemma 4 E2B',
+                subtitle: 'Reasoning & study packs · ~2.6 GB',
+                progress: gemmaProgress,
+                stageLabel: gemmaMessage,
+                isError: gemmaError,
+                errorMessage: gemmaError ? gemmaMessage : null,
+              ),
+            ],
+            if (showWhisper) ...[
+              const SizedBox(height: 12),
+              _ModelRow(
+                label: 'Whisper Tiny',
+                subtitle: 'On-device transcription · ~30 MB',
+                progress: whisperProgress,
+                stageLabel: whisperMessage,
+                isError: whisperError,
+                errorMessage: whisperError ? whisperMessage : null,
+              ),
+            ],
           ],
         ),
       ),
@@ -360,17 +375,15 @@ class _SetupBanner extends StatelessWidget {
 class _ModelRow extends StatelessWidget {
   final String label;
   final String subtitle;
-  final String status;
   final double? progress;
-  final bool isReady;
+  final String? stageLabel;
   final bool isError;
   final String? errorMessage;
   const _ModelRow({
     required this.label,
     required this.subtitle,
-    required this.status,
     required this.progress,
-    required this.isReady,
+    required this.stageLabel,
     required this.isError,
     required this.errorMessage,
   });
@@ -378,6 +391,10 @@ class _ModelRow extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final cs = Theme.of(context).colorScheme;
+    final pct = progress != null ? '${(progress! * 100).toStringAsFixed(0)}%' : null;
+    // After download hits 100% we switch to indeterminate so the user
+    // doesn't think it's stuck — a 2.6 GB mmap can take 10-30s.
+    final indeterminate = progress == null || (progress != null && progress! >= 0.999);
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
@@ -389,22 +406,21 @@ class _ModelRow extends StatelessWidget {
                 children: [
                   Text(label, style: Theme.of(context).textTheme.bodyMedium),
                   Text(
-                    subtitle,
+                    stageLabel ?? subtitle,
                     style: Theme.of(context).textTheme.bodySmall?.copyWith(
                           color: Colors.white.withValues(alpha: 0.5),
                         ),
+                    maxLines: 1, overflow: TextOverflow.ellipsis,
                   ),
                 ],
               ),
             ),
             const SizedBox(width: 12),
-            if (isReady)
-              Icon(Icons.check_circle_rounded, color: cs.primary, size: 20)
-            else if (isError)
+            if (isError)
               Icon(Icons.error_outline_rounded, color: cs.error, size: 20)
-            else
+            else if (pct != null && !indeterminate)
               Text(
-                progress != null ? '${(progress! * 100).toStringAsFixed(0)}%' : '…',
+                pct,
                 style: Theme.of(context).textTheme.bodySmall?.copyWith(
                       color: Colors.white.withValues(alpha: 0.7),
                       fontFeatures: const [FontFeature.tabularFigures()],
@@ -416,7 +432,7 @@ class _ModelRow extends StatelessWidget {
         ClipRRect(
           borderRadius: BorderRadius.circular(4),
           child: LinearProgressIndicator(
-            value: isReady ? 1 : (isError ? 0 : progress),
+            value: isError ? 0 : (indeterminate ? null : progress),
             minHeight: 4,
             backgroundColor: Colors.white.withValues(alpha: 0.06),
             valueColor: AlwaysStoppedAnimation(isError ? cs.error : cs.primary),
