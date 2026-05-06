@@ -1,5 +1,5 @@
-# Cactus pulls in objectbox_flutter_libs which requires iOS 15.0+.
-platform :ios, '15.0'
+# Cactus needs 15+, flutter_gemma needs 16+.
+platform :ios, '16.0'
 
 # CocoaPods analytics sends network stats synchronously affecting flutter build latency.
 ENV['COCOAPODS_DISABLE_STATS'] = 'true'
@@ -28,7 +28,9 @@ require File.expand_path(File.join('packages', 'flutter_tools', 'bin', 'podhelpe
 flutter_ios_podfile_setup
 
 target 'Runner' do
-  use_frameworks!
+  # MediaPipe + TensorFlowLite ship as static .xcframeworks. Build all pods
+  # as static so they coexist cleanly with flutter_gemma's transitive deps.
+  use_frameworks! :linkage => :static
 
   flutter_install_all_ios_pods File.dirname(File.realpath(__FILE__))
   target 'RunnerTests' do

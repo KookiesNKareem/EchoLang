@@ -1,41 +1,53 @@
-// On-device Gemma 4 E2B via Cactus.
+// On-device Gemma 4 E2B via flutter_gemma (MediaPipe GenAI / LiteRT).
 //
-// First app launch downloads Cactus's pre-quantized Gemma 4 E2B build
-// (~1-2 GB) from HuggingFace via the Cactus model registry. Subsequent
-// launches reuse the cached model from local storage.
-//
-// All Q&A is grounded in the lecture transcript injected as system context
-// — the model answers about *this* lecture, not its general knowledge.
+// Why flutter_gemma instead of cactus: Cactus 1.3.0's published model
+// catalog tops out at Gemma 3 — their Gemma 4 support is in an internal
+// v1.12 build that hasn't reached pub.dev. The hackathon is *Gemma 4
+// Good Hackathon*, so Gemma 3 disqualifies us. flutter_gemma 0.14.5
+// supports ModelType.gemma4 against the official litert-community
+// Gemma 4 E2B/E4B builds and runs on iOS via MediaPipe GenAI's LiteRT
+// runtime — which also makes us a clean fit for the LiteRT $10k prize.
 
 import 'dart:convert';
 
-import 'package:cactus/cactus.dart';
+import 'package:flutter_gemma/flutter_gemma.dart';
 
 import '../data/models.dart';
 
-/// Status of the on-device model.
 enum GemmaStatus { notReady, downloading, ready, error }
 
 class GemmaService {
-  static const String modelId = 'google/gemma-4-E2B-it';
+  /// Public, ungated mirror of Google's Gemma 4 E2B LiteRT model. We use a
+  /// community mirror so end-users don't need a HuggingFace account, license
+  /// acceptance, or read token — the original litert-community repo is
+  /// gated. Override at build time with --dart-define=MODEL_URL=... to point
+  /// to your own mirror (e.g. for production reliability).
+  ///
+  /// Verified ungated 2026-05-05 with 11k+ downloads. If this URL ever
+  /// disappears, equivalent files exist at huggingworld/, guoziwei93/, and
+  /// the gated upstream litert-community/gemma-4-E2B-it-litert-lm.
+  static const String modelUrl = String.fromEnvironment(
+    'MODEL_URL',
+    defaultValue:
+        'https://huggingface.co/samirsayyed/gemma-4-E2B-it-litert-lm/resolve/main/gemma-4-E2B-it.litertlm',
+  );
 
-  // Lazy-constructed: instantiating CactusLM kicks off native bridge setup,
-  // which under iOS release-mode AOT can crash the app at launch if the
-  // plugin's native libs misbehave on this device. We defer until the
-  // user actually enters a screen that needs Gemma (Q&A or Record).
-  CactusLM? _lm;
+  /// Optional HF token. Only needed if MODEL_URL points to a gated repo.
+  /// Default mirror is public, so no token required for normal use.
+  static const String hfToken = String.fromEnvironment('HF_TOKEN');
+
   GemmaStatus _status = GemmaStatus.notReady;
   GemmaStatus get status => _status;
-
-  double? _progress; // 0..1 while downloading
-  double? get downloadProgress => _progress;
 
   String? _statusMessage;
   String? get statusMessage => _statusMessage;
 
-  /// Ensure the model is downloaded and initialized. Idempotent — safe to
-  /// call from multiple screens; subsequent calls return immediately if
-  /// the model is already loaded.
+  double? _progress;
+  double? get downloadProgress => _progress;
+
+  InferenceModel? _model;
+  InferenceChat? _chat;
+
   Future<void>? _readyFuture;
   final List<void Function(double? progress, String status)> _listeners = [];
 
@@ -48,78 +60,72 @@ class GemmaService {
     if (_status == GemmaStatus.ready) return;
     _status = GemmaStatus.downloading;
     try {
-      _lm ??= CactusLM();
-      await _lm!.downloadModel(
-        model: modelId,
-        downloadProcessCallback: (progress, status, isError) {
-          _progress = progress;
-          _statusMessage = status;
-          for (final l in _listeners) {
-            l(progress, status);
-          }
-          if (isError) _status = GemmaStatus.error;
-        },
-      );
-      // Without params, initializeModel defaults to CactusInitParams's
-      // qwen3-0.6 default — same bug as WhisperService.
-      await _lm!.initializeModel(params: CactusInitParams(model: modelId));
+      // Initialize is required even without a token — flutter_gemma uses it
+      // to set up its service registry. Pass an empty string when public.
+      await FlutterGemma.initialize(huggingFaceToken: hfToken.isEmpty ? null : hfToken);
+      // installModel is a no-op if the model is already on disk.
+      final builder = FlutterGemma.installModel(modelType: ModelType.gemma4);
+      final fromNetwork = hfToken.isEmpty
+          ? builder.fromNetwork(modelUrl)
+          : builder.fromNetwork(modelUrl, token: hfToken);
+      await fromNetwork
+          .withProgress((p) {
+            final fraction = p / 100.0;
+            _progress = fraction;
+            _statusMessage = 'Downloading Gemma 4 E2B ($p%)';
+            for (final l in _listeners) {
+              l(fraction, _statusMessage!);
+            }
+          })
+          .install();
+      _model = await FlutterGemma.getActiveModel(maxTokens: 2048);
+      _chat = await _model!.createChat();
       _status = GemmaStatus.ready;
-      _statusMessage = 'Model ready';
+      _statusMessage = 'Gemma 4 ready';
     } catch (e) {
       _status = GemmaStatus.error;
-      _statusMessage = 'Failed to load model: $e';
+      _statusMessage = 'Failed to load Gemma 4: $e';
       _readyFuture = null;
       rethrow;
     }
   }
 
-  /// Ask a question grounded in the lecture transcript.
-  /// Returns the full answer (Cactus's generateCompletion is non-streaming;
-  /// we surface it all at once when the model finishes generating).
+  /// Ask a question grounded in the lecture transcript. We seed a fresh chat
+  /// with a system-style instruction + transcript, then send the user
+  /// question — Gemma's chat session keeps history across calls within a
+  /// single Q&A flow.
   Future<String> ask({required String lectureContext, required String question}) async {
-    if (_status != GemmaStatus.ready || _lm == null) {
-      throw StateError('Gemma model not ready (status=$_status)');
-    }
-    final trimmedContext = _trimContext(lectureContext);
-    final messages = <ChatMessage>[
-      ChatMessage(
-        role: 'system',
-        content:
-            'You are a tutor helping a student review a lecture they attended. '
-            'Answer using only what is in the transcript below. If the answer '
-            'is not in the transcript, say so plainly. Reply in the same '
-            'language the student used.\n\n'
-            '--- LECTURE TRANSCRIPT ---\n$trimmedContext\n--- END TRANSCRIPT ---',
-      ),
-      ChatMessage(role: 'user', content: question),
-    ];
-    final result = await _lm!.generateCompletion(messages: messages);
-    if (!result.success) {
-      throw Exception('Gemma generation failed');
-    }
-    return result.response.trim();
-  }
-
-  /// Generate a study pack from a transcript, fully on-device.
-  ///
-  /// Used in personal record mode (no Pi). Asks Gemma for summary +
-  /// key terms + practice questions in a single JSON response.
-  Future<StudyPack> generateStudyPack({required String transcript, String lang = 'en'}) async {
-    if (_status != GemmaStatus.ready || _lm == null) {
+    if (_status != GemmaStatus.ready || _model == null) {
       throw StateError('Gemma not ready (status=$_status)');
     }
-    final trimmed = _trimContext(transcript);
-    final prompt = _studyPackPrompt(trimmed);
-    final result = await _lm!.generateCompletion(messages: [
-      ChatMessage(role: 'user', content: prompt),
-    ]);
-    if (!result.success) {
-      throw Exception('Gemma generation failed');
+    final trimmed = _trimContext(lectureContext);
+    final preamble =
+        'You are a tutor helping a student review a lecture they attended. '
+        'Use only what is in the transcript below. If the answer is not in '
+        'the transcript, say so plainly. Reply in the same language the '
+        'student used.\n\n--- LECTURE TRANSCRIPT ---\n$trimmed\n--- END ---';
+    // Fresh chat per question keeps memory bounded; the transcript fits in
+    // context easily for typical lecture lengths.
+    _chat = await _model!.createChat();
+    await _chat!.addQueryChunk(Message.text(text: preamble, isUser: true));
+    await _chat!.addQueryChunk(Message.text(text: question, isUser: true));
+    final response = await _chat!.generateChatResponse();
+    return _extractText(response);
+  }
+
+  Future<StudyPack> generateStudyPack({required String transcript, String lang = 'en'}) async {
+    if (_status != GemmaStatus.ready || _model == null) {
+      throw StateError('Gemma not ready (status=$_status)');
     }
-    final json = _extractJson(result.response);
+    final prompt = _studyPackPrompt(_trimContext(transcript));
+    final chat = await _model!.createChat();
+    await chat.addQueryChunk(Message.text(text: prompt, isUser: true));
+    final response = await chat.generateChatResponse();
+    final raw = _extractText(response);
+    final json = _extractJson(raw);
     return StudyPack(
       lang: lang,
-      summary: (json['summary'] as String?) ?? result.response.trim(),
+      summary: (json['summary'] as String?) ?? raw,
       keyTerms: ((json['key_terms'] as List?) ?? const [])
           .whereType<Map>()
           .map((m) => KeyTerm(
@@ -134,9 +140,22 @@ class GemmaService {
   }
 
   void unload() {
-    _lm?.unload();
-    _lm = null;
+    _chat = null;
+    _model?.close();
+    _model = null;
+    _readyFuture = null;
     _status = GemmaStatus.notReady;
+  }
+
+  // ---- helpers ----
+
+  String _extractText(dynamic response) {
+    if (response is String) return response.trim();
+    try {
+      final t = (response as dynamic).text;
+      if (t is String) return t.trim();
+    } catch (_) {}
+    return response.toString().trim();
   }
 
   String _studyPackPrompt(String transcript) => '''
@@ -177,8 +196,6 @@ JSON:
 
   String _trimContext(String ctx) {
     if (ctx.length <= 6000) return ctx;
-    return ctx.substring(0, 3000) +
-        '\n[…middle of lecture omitted…]\n' +
-        ctx.substring(ctx.length - 3000);
+    return '${ctx.substring(0, 3000)}\n[…middle of lecture omitted…]\n${ctx.substring(ctx.length - 3000)}';
   }
 }
