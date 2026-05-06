@@ -1,39 +1,48 @@
-// On-device speech-to-text via Cactus's CactusSTT (Whisper under the hood).
+// On-device speech-to-text with two backends and automatic fallback.
 //
-// Used in personal record mode: phone records audio, this transcribes it
-// fully locally so the user gets a transcript + study pack + Q&A even with
-// no Pi and no internet.
+// Preferred: device-native (Apple Speech on iOS, Google SpeechRecognizer on
+// Android). Streaming partials, no model download, hardware-accelerated.
+// On modern phones this is faster and more accurate than any model we
+// could ship.
+//
+// Fallback: Cactus's Whisper for devices without a usable native engine
+// — older Androids without Google STT installed, AOSP forks, etc. Costs
+// ~57MB of one-time download and runs after recording stops (no live
+// captions).
+//
+// The Record screen calls this service through a backend-agnostic API and
+// the live-captioning UI degrades gracefully when only the fallback is
+// available.
 
+import 'dart:async';
 import 'dart:typed_data';
 
 import 'package:cactus/cactus.dart';
+import 'package:speech_to_text/speech_to_text.dart' as stt;
 
 enum WhisperStatus { notReady, downloading, ready, error }
 
-class WhisperService {
-  /// Cactus's voice-model registry indexes by bare slug, not by HuggingFace
-  /// org/name. The full set as of v1.3 (verified against the SDK's
-  /// /api/voice-models response): whisper-tiny (30MB), whisper-base (57MB),
-  /// whisper-small (192MB), whisper-medium (615MB), and *-pro variants with
-  /// slightly higher accuracy at ~25% larger size.
-  ///
-  /// Bumped from tiny to base after seeing tiny truncate a 9-second
-  /// recording to "the". Base is still small enough to finish first-install
-  /// download in under a minute on phone WiFi but materially more reliable.
-  static const String modelId = 'whisper-base';
+enum SpeechBackend { native, cactus }
 
-  // Lazy: same reasoning as GemmaService — instantiating CactusSTT runs
-  // native-side init that can crash a release-mode iOS build at launch.
-  // Defer until the user enters the Record screen.
-  CactusSTT? _stt;
+class WhisperService {
   WhisperStatus _status = WhisperStatus.notReady;
   WhisperStatus get status => _status;
 
   String? _statusMessage;
   String? get statusMessage => _statusMessage;
 
-  // Memoize the in-flight load so background pre-load + on-demand calls
-  // from screens share a single download/init pass.
+  SpeechBackend? _backend;
+  SpeechBackend? get backend => _backend;
+  bool get supportsLiveCaptions => _backend == SpeechBackend.native;
+
+  // Native (preferred) backend
+  final stt.SpeechToText _native = stt.SpeechToText();
+  // Cactus (fallback) backend — only constructed if native fails
+  CactusSTT? _cactus;
+
+  /// Cactus model id, used only by the fallback path.
+  static const String _cactusModelId = 'whisper-base';
+
   Future<void>? _readyFuture;
   final List<void Function(double? progress, String status)> _listeners = [];
 
@@ -46,54 +55,105 @@ class WhisperService {
     if (_status == WhisperStatus.ready) return;
     _status = WhisperStatus.downloading;
     try {
-      _stt ??= CactusSTT();
-      await _stt!.downloadModel(
-        model: modelId,
-        downloadProcessCallback: (progress, status, isError) {
+      // Try native first
+      final available = await _native.initialize(debugLogging: false);
+      if (available) {
+        _backend = SpeechBackend.native;
+        _status = WhisperStatus.ready;
+        _statusMessage = 'Speech recognition ready';
+        for (final l in _listeners) {
+          l(1.0, _statusMessage!);
+        }
+        return;
+      }
+      // Native unavailable — fall back to Cactus Whisper
+      _statusMessage = 'Native STT unavailable; downloading Whisper fallback…';
+      for (final l in _listeners) {
+        l(null, _statusMessage!);
+      }
+      _cactus = CactusSTT();
+      await _cactus!.downloadModel(
+        model: _cactusModelId,
+        downloadProcessCallback: (p, status, isError) {
           _statusMessage = status;
           for (final l in _listeners) {
-            l(progress, status);
+            l(p, status);
           }
           if (isError) _status = WhisperStatus.error;
         },
       );
-      // initializeModel() without params defaults to "qwen3-0.6" (CactusInitParams
-      // default) and tries to load that — which doesn't exist as a voice model.
-      // Have to pass the model id explicitly here.
-      await _stt!.initializeModel(params: CactusInitParams(model: modelId));
+      await _cactus!.initializeModel(params: CactusInitParams(model: _cactusModelId));
+      _backend = SpeechBackend.cactus;
       _status = WhisperStatus.ready;
-      _statusMessage = 'Whisper ready';
+      _statusMessage = 'Whisper ready (fallback)';
       for (final l in _listeners) {
         l(1.0, _statusMessage!);
       }
     } catch (e) {
       _status = WhisperStatus.error;
-      _statusMessage = 'Failed to load Whisper: $e';
-      _readyFuture = null; // allow retries
+      _statusMessage = 'Failed to set up speech recognition: $e';
+      _readyFuture = null;
       rethrow;
     }
   }
 
-  /// Transcribe raw 16-bit PCM audio (mono, 16kHz) from a [Uint8List].
-  ///
-  /// The Cactus iOS pipeline expects *streamed* raw PCM, not a WAV file.
-  /// Passing a WAV file via transcribe(audioFilePath:) errors with
-  /// "transcription failed code -1" — the underlying engine doesn't parse
-  /// the WAV header. Use AudioRecorder.startStream(AudioEncoder.pcm16bits)
-  /// to feed this method.
-  Future<String> transcribeBytes(Uint8List audio) async {
-    if (_status != WhisperStatus.ready || _stt == null) {
-      throw StateError('Whisper not ready (status=$_status)');
+  /// Start listening. With the native backend, [onPartial] fires every
+  /// time the engine refines its guess (live captions). With Cactus, no
+  /// partials arrive until [stopListening] is called.
+  Future<void> startListening({
+    required void Function(String partial) onPartial,
+    String localeId = 'en_US',
+    Stream<Uint8List> Function()? cactusAudioStreamFactory,
+  }) async {
+    if (_status != WhisperStatus.ready) {
+      throw StateError('Speech recognizer not ready (status=$_status)');
     }
-    if (audio.length < 16000 * 2) {
-      // <1 second of mono PCM16 at 16kHz = 32 KB. Anything less is silence.
-      throw Exception(
-        'Audio too short (${audio.length} bytes) — microphone may have been '
-        'muted or no sound captured.',
+    if (_backend == SpeechBackend.native) {
+      await _native.listen(
+        onResult: (r) => onPartial(r.recognizedWords),
+        localeId: localeId,
+        listenOptions: stt.SpeechListenOptions(
+          partialResults: true,
+          onDevice: true,
+          cancelOnError: false,
+          listenMode: stt.ListenMode.dictation,
+        ),
       );
+      return;
     }
-    final streamed = await _stt!.transcribeStream(audioStream: Stream.value(audio));
-    // Drain the token stream so the result completer fires.
+    // Cactus path — caller is responsible for streaming PCM16 audio in via
+    // the factory. We collect it and transcribe at stop time.
+    if (cactusAudioStreamFactory == null) {
+      throw StateError('Cactus backend needs cactusAudioStreamFactory');
+    }
+    _pendingAudio = cactusAudioStreamFactory();
+  }
+
+  Stream<Uint8List>? _pendingAudio;
+  String _cactusFinal = '';
+
+  /// Returns the final transcript. Throws if nothing was captured.
+  Future<String> stopListening() async {
+    if (_backend == SpeechBackend.native) {
+      if (_native.isListening) await _native.stop();
+      final text = _stripWhisperTokens(_native.lastRecognizedWords).trim();
+      if (text.isEmpty) {
+        throw Exception(
+            'No speech detected. Try recording closer to the speaker.');
+      }
+      return text;
+    }
+    // Cactus path
+    if (_cactus == null || _pendingAudio == null) {
+      throw StateError('No active recording to stop');
+    }
+    final bytes = await _collectStream(_pendingAudio!);
+    _pendingAudio = null;
+    if (bytes.length < 16000 * 2) {
+      throw Exception('Audio too short — microphone may have been muted.');
+    }
+    final streamed = await _cactus!
+        .transcribeStream(audioStream: Stream.value(Uint8List.fromList(bytes)));
     final tokens = StringBuffer();
     streamed.stream.listen((t) => tokens.write(t));
     final result = await streamed.result;
@@ -103,24 +163,36 @@ class WhisperService {
     final raw = result.text.isNotEmpty ? result.text : tokens.toString();
     final text = _stripWhisperTokens(raw).trim();
     if (text.isEmpty) {
-      throw Exception(
-        'Whisper produced an empty transcript. The audio probably had no '
-        'recognizable speech, or whisper-tiny missed it. Try recording '
-        'closer to the speaker, or upgrade to whisper-base.',
-      );
+      throw Exception('Whisper produced an empty transcript.');
     }
+    _cactusFinal = text;
     return text;
   }
 
+  String get lastTranscript {
+    if (_backend == SpeechBackend.native) return _native.lastRecognizedWords;
+    return _cactusFinal;
+  }
+
+  bool get isListening => _backend == SpeechBackend.native ? _native.isListening : false;
+
   void unload() {
-    _stt?.unload();
-    _stt = null;
+    if (_native.isListening) _native.stop();
+    _cactus?.unload();
+    _cactus = null;
     _status = WhisperStatus.notReady;
   }
 
-  /// Strip Whisper's internal special tokens that occasionally leak through
-  /// the streaming decoder despite the <|notimestamps|> prompt. Examples:
-  /// <|18.02|> (timestamp), <|startoftranscript|>, <|en|>, <|transcribe|>.
+  static Future<List<int>> _collectStream(Stream<Uint8List> s) async {
+    final out = <int>[];
+    await for (final chunk in s) {
+      out.addAll(chunk);
+    }
+    return out;
+  }
+
+  /// Strip Whisper's special tokens that occasionally leak through Cactus's
+  /// streaming decoder despite the <|notimestamps|> prompt.
   static final RegExp _specialToken = RegExp(r'<\|[^|>]*\|>');
   String _stripWhisperTokens(String s) =>
       s.replaceAll(_specialToken, '').replaceAll(RegExp(r'\s+'), ' ');

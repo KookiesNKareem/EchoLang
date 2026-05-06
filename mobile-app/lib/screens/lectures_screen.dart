@@ -357,8 +357,8 @@ class _SetupBanner extends StatelessWidget {
             if (showWhisper) ...[
               const SizedBox(height: 12),
               _ModelRow(
-                label: 'Whisper Tiny',
-                subtitle: 'On-device transcription · ~30 MB',
+                label: 'Transcription model',
+                subtitle: 'On-device speech-to-text',
                 progress: whisperProgress,
                 stageLabel: whisperMessage,
                 isError: whisperError,

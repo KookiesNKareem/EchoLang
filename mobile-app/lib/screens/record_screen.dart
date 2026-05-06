@@ -5,11 +5,9 @@
 // in the lectures list as if it had been downloaded from a Pi.
 
 import 'dart:async';
-import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
-import 'package:record/record.dart';
 import 'package:uuid/uuid.dart';
 
 import '../data/bundle_store.dart';
@@ -34,18 +32,14 @@ class RecordScreen extends StatefulWidget {
 }
 
 class _RecordScreenState extends State<RecordScreen> with SingleTickerProviderStateMixin {
-  final AudioRecorder _recorder = AudioRecorder();
   final _titleCtrl = TextEditingController(text: 'Recorded lecture');
   late final AnimationController _pulse;
   _Phase _phase = _Phase.idle;
   String? _statusMsg;
   Duration _elapsed = Duration.zero;
   Timer? _timer;
-  // Raw PCM16 audio captured during recording. Cactus's STT pipeline
-  // expects a stream of these bytes; we collect them here, then hand
-  // off as a single Stream.value(...) at stop time.
-  final List<int> _audioBuffer = [];
-  StreamSubscription<List<int>>? _audioSub;
+  // Live transcript built up from partial-result callbacks while recording.
+  String _livePartial = '';
   DateTime? _startedAt;
 
   @override
@@ -61,70 +55,57 @@ class _RecordScreenState extends State<RecordScreen> with SingleTickerProviderSt
   void dispose() {
     _pulse.dispose();
     _timer?.cancel();
-    _recorder.dispose();
+    widget.whisper.unload();
     _titleCtrl.dispose();
     super.dispose();
   }
 
   Future<void> _startRecording() async {
-    if (!await _recorder.hasPermission()) {
+    try {
+      await widget.whisper.ensureReady();
+    } catch (e) {
       setState(() {
         _phase = _Phase.error;
-        _statusMsg = 'Microphone permission denied. Enable it in Settings.';
+        _statusMsg = 'Speech recognition not ready: $e';
       });
       return;
     }
-    _audioBuffer.clear();
-    final stream = await _recorder.startStream(
-      const RecordConfig(
-        encoder: AudioEncoder.pcm16bits,
-        sampleRate: 16000,
-        numChannels: 1,
-      ),
-    );
-    _audioSub = stream.listen(_audioBuffer.addAll);
     setState(() {
       _phase = _Phase.recording;
       _statusMsg = null;
       _elapsed = Duration.zero;
+      _livePartial = '';
       _startedAt = DateTime.now();
     });
+    try {
+      await widget.whisper.startListening(onPartial: (partial) {
+        if (!mounted) return;
+        setState(() => _livePartial = partial);
+      });
+    } catch (e) {
+      setState(() {
+        _phase = _Phase.error;
+        _statusMsg = 'Couldn’t start recording: $e';
+      });
+      return;
+    }
     _timer = Timer.periodic(const Duration(seconds: 1), (_) {
       if (mounted) setState(() => _elapsed += const Duration(seconds: 1));
     });
   }
 
   Future<void> _stopRecording() async {
-    await _recorder.stop();
-    await _audioSub?.cancel();
-    _audioSub = null;
     _timer?.cancel();
-    if (_audioBuffer.isEmpty) {
-      setState(() {
-        _phase = _Phase.error;
-        _statusMsg = 'Recording captured no audio.';
-      });
-      return;
-    }
     await _processRecording();
   }
 
   Future<void> _processRecording() async {
     setState(() {
       _phase = _Phase.transcribing;
-      _statusMsg = 'Loading Whisper…';
+      _statusMsg = 'Finalizing transcript…';
     });
     try {
-      await widget.whisper.ensureReady(onProgress: (p, status) {
-        if (!mounted) return;
-        setState(() => _statusMsg =
-            p != null ? 'Whisper download ${(p * 100).toStringAsFixed(0)}%' : status);
-      });
-
-      setState(() => _statusMsg = 'Transcribing your lecture…');
-      final audio = Uint8List.fromList(_audioBuffer);
-      _audioBuffer.clear();
-      final transcript = await widget.whisper.transcribeBytes(audio);
+      final transcript = await widget.whisper.stopListening();
 
       setState(() {
         _phase = _Phase.summarizing;
@@ -216,7 +197,11 @@ class _RecordScreenState extends State<RecordScreen> with SingleTickerProviderSt
                 child: Center(
                   child: switch (_phase) {
                     _Phase.recording => _RecordingIndicator(
-                        elapsed: _elapsed, fmt: _fmt, pulse: _pulse),
+                        elapsed: _elapsed,
+                        fmt: _fmt,
+                        pulse: _pulse,
+                        livePartial: widget.whisper.supportsLiveCaptions ? _livePartial : null,
+                      ),
                     _Phase.transcribing || _Phase.summarizing =>
                       _ProcessingIndicator(message: _statusMsg ?? 'Working…'),
                     _Phase.error => _ErrorIndicator(message: _statusMsg ?? 'Something went wrong'),
@@ -280,7 +265,13 @@ class _RecordingIndicator extends StatelessWidget {
   final Duration elapsed;
   final String Function(Duration) fmt;
   final AnimationController pulse;
-  const _RecordingIndicator({required this.elapsed, required this.fmt, required this.pulse});
+  final String? livePartial; // null when backend doesn't stream partials
+  const _RecordingIndicator({
+    required this.elapsed,
+    required this.fmt,
+    required this.pulse,
+    this.livePartial,
+  });
 
   @override
   Widget build(BuildContext context) {
@@ -323,9 +314,29 @@ class _RecordingIndicator extends StatelessWidget {
         ),
         const SizedBox(height: 8),
         Text(
-          'Recording…',
+          livePartial != null && livePartial!.isNotEmpty ? 'Listening…' : 'Recording…',
           style: TextStyle(color: Colors.white.withValues(alpha: 0.5)),
         ),
+        if (livePartial != null && livePartial!.isNotEmpty) ...[
+          const SizedBox(height: 24),
+          Container(
+            constraints: const BoxConstraints(maxHeight: 160),
+            margin: const EdgeInsets.symmetric(horizontal: 8),
+            padding: const EdgeInsets.all(16),
+            decoration: BoxDecoration(
+              color: Colors.white.withValues(alpha: 0.04),
+              borderRadius: BorderRadius.circular(12),
+            ),
+            child: SingleChildScrollView(
+              reverse: true,
+              child: Text(
+                livePartial!,
+                style: const TextStyle(fontSize: 16, height: 1.4),
+                textAlign: TextAlign.center,
+              ),
+            ),
+          ),
+        ],
       ],
     );
   }

@@ -66,6 +66,8 @@
 	</array>
 	<key>NSMicrophoneUsageDescription</key>
 	<string>LocalLearning records audio so it can transcribe the lecture on this device — entirely offline, nothing leaves your phone.</string>
+	<key>NSSpeechRecognitionUsageDescription</key>
+	<string>LocalLearning uses Apple's on-device speech recognition to turn what your teacher says into text — runs locally, nothing leaves your phone.</string>
 	<key>UILaunchStoryboardName</key>
 	<string>LaunchScreen</string>
 	<key>UIMainStoryboardFile</key>
