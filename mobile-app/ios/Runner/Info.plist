@@ -64,8 +64,6 @@
 	<array>
 		<string>_locallearning._tcp</string>
 	</array>
-	<key>NSCameraUsageDescription</key>
-	<string>LocalLearning uses the camera to scan the QR code your teacher projects so you can join the class instantly.</string>
 	<key>NSMicrophoneUsageDescription</key>
 	<string>LocalLearning records audio so it can transcribe the lecture on this device — entirely offline, nothing leaves your phone.</string>
 	<key>UILaunchStoryboardName</key>

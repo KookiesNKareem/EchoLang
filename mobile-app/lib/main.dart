@@ -23,6 +23,18 @@ class _LocalLearningAppState extends State<LocalLearningApp> {
   final _whisper = WhisperService();
 
   @override
+  void initState() {
+    super.initState();
+    // Background pre-load: after the first frame renders, kick off the
+    // Whisper download so by the time the user taps "Record now" the model
+    // is ready (or close to it). Wrapped in Future so we don't block the
+    // initial render; failures are silent — the Record screen surfaces them.
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _whisper.ensureReady().catchError((_) {/* surfaced in Record screen */});
+    });
+  }
+
+  @override
   void dispose() {
     _gemma.unload();
     _whisper.unload();

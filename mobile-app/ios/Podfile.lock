@@ -4,9 +4,6 @@ PODS:
   - device_info_plus (0.0.1):
     - Flutter
   - Flutter (1.0.0)
-  - mobile_scanner (7.0.0):
-    - Flutter
-    - FlutterMacOS
   - ObjectBox (5.1.1)
   - objectbox_flutter_libs (0.0.1):
     - Flutter
@@ -25,7 +22,6 @@ DEPENDENCIES:
   - cactus (from `.symlinks/plugins/cactus/ios`)
   - device_info_plus (from `.symlinks/plugins/device_info_plus/ios`)
   - Flutter (from `Flutter`)
-  - mobile_scanner (from `.symlinks/plugins/mobile_scanner/darwin`)
   - objectbox_flutter_libs (from `.symlinks/plugins/objectbox_flutter_libs/ios`)
   - package_info_plus (from `.symlinks/plugins/package_info_plus/ios`)
   - permission_handler_apple (from `.symlinks/plugins/permission_handler_apple/ios`)
@@ -43,8 +39,6 @@ EXTERNAL SOURCES:
     :path: ".symlinks/plugins/device_info_plus/ios"
   Flutter:
     :path: Flutter
-  mobile_scanner:
-    :path: ".symlinks/plugins/mobile_scanner/darwin"
   objectbox_flutter_libs:
     :path: ".symlinks/plugins/objectbox_flutter_libs/ios"
   package_info_plus:
@@ -60,7 +54,6 @@ SPEC CHECKSUMS:
   cactus: 8c7f4da7bf87fc172f05ef974065f2ca6c3e809c
   device_info_plus: 21fcca2080fbcd348be798aa36c3e5ed849eefbe
   Flutter: cabc95a1d2626b1b06e7179b784ebcf0c0cde467
-  mobile_scanner: 9157936403f5a0644ca3779a38ff8404c5434a93
   ObjectBox: 26871f7cce80a8bd2e610bf944aeaded730f6925
   objectbox_flutter_libs: 28e7bd5ae78e831f141679c8a6e31632453b959f
   package_info_plus: af8e2ca6888548050f16fa2f1938db7b5a5df499

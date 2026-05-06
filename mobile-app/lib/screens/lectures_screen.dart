@@ -51,7 +51,7 @@ class _LecturesScreenState extends State<LecturesScreen> {
               await context.push('/connect');
               _refresh();
             },
-            icon: const Icon(Icons.qr_code_scanner),
+            icon: const Icon(Icons.wifi),
             label: const Text('Join classroom'),
             backgroundColor: Theme.of(context).colorScheme.surfaceContainerHighest,
             foregroundColor: Theme.of(context).colorScheme.onSurface,

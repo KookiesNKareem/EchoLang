@@ -3,7 +3,6 @@ import 'package:go_router/go_router.dart';
 
 import '../data/bundle_store.dart';
 import '../data/pi_discovery.dart';
-import 'scan_screen.dart';
 
 const _langs = ['en', 'ar', 'uk', 'es', 'zh', 'fr', 'ps', 'fa'];
 
@@ -52,8 +51,8 @@ class _ConnectScreenState extends State<ConnectScreen> {
       if (!mounted) return;
       setState(() => _discoveredPis = pis);
     } catch (_) {
-      // mDNS can fail (permissions, network type) — silently fall through to
-      // the QR / manual-entry paths.
+      // mDNS can fail (permissions, network type) — silently fall through
+      // to manual entry.
     } finally {
       if (mounted) setState(() => _scanning = false);
     }
@@ -94,99 +93,54 @@ class _ConnectScreenState extends State<ConnectScreen> {
     }
   }
 
-  Future<void> _scan() async {
-    final result = await Navigator.of(context).push<ScanResult>(
-      MaterialPageRoute(builder: (_) => const ScanScreen()),
-    );
-    if (result == null || !mounted) return;
-    setState(() {
-      _host.text = result.host;
-      _classId.text = result.classId;
-      if (result.lang != null) _lang = result.lang!;
-    });
-    // Scanner gave us everything — kick off the download immediately.
-    _download();
-  }
-
   @override
   Widget build(BuildContext context) {
     final canSubmit = !_loading && _host.text.trim().isNotEmpty && _classId.text.trim().isNotEmpty;
     return Scaffold(
-      appBar: AppBar(title: const Text('Connect to classroom')),
+      appBar: AppBar(title: const Text('Join classroom')),
       body: ListView(
         padding: const EdgeInsets.all(16),
         children: [
-          if (_scanning || _discoveredPis.isNotEmpty) ...[
-            Row(
-              children: [
-                Text('Found nearby', style: Theme.of(context).textTheme.titleSmall),
-                const SizedBox(width: 8),
-                if (_scanning) const SizedBox(width: 12, height: 12, child: CircularProgressIndicator(strokeWidth: 2)),
-                const Spacer(),
-                IconButton(
-                  icon: const Icon(Icons.refresh),
-                  onPressed: _scanning ? null : _scanLan,
-                  tooltip: 'Rescan',
-                ),
-              ],
-            ),
-            if (_discoveredPis.isEmpty && !_scanning)
-              Padding(
-                padding: const EdgeInsets.all(8),
-                child: Text(
-                  'No classroom Pis on this network. Use QR or manual entry.',
-                  style: Theme.of(context).textTheme.bodySmall,
-                ),
+          Row(
+            children: [
+              Text('Found nearby', style: Theme.of(context).textTheme.titleSmall),
+              const SizedBox(width: 8),
+              if (_scanning)
+                const SizedBox(width: 12, height: 12, child: CircularProgressIndicator(strokeWidth: 2)),
+              const Spacer(),
+              IconButton(
+                icon: const Icon(Icons.refresh),
+                onPressed: _scanning ? null : _scanLan,
+                tooltip: 'Rescan',
               ),
-            ..._discoveredPis.map((pi) => Card(
-                  child: ListTile(
-                    leading: Icon(
-                      pi.hasActiveClass ? Icons.podcasts : Icons.dns,
-                      color: pi.hasActiveClass ? Colors.greenAccent : null,
-                    ),
-                    title: Text(pi.activeTitle?.isNotEmpty == true
-                        ? pi.activeTitle!
-                        : 'No class in session'),
-                    subtitle: Text([
-                      pi.host,
-                      if (pi.activeTeacher?.isNotEmpty == true) pi.activeTeacher!,
-                    ].join(' · ')),
-                    enabled: pi.hasActiveClass && !_loading,
-                    trailing: const Icon(Icons.chevron_right),
-                    onTap: () => _useDiscovered(pi),
-                  ),
-                )),
-            const SizedBox(height: 16),
-          ],
-          Card(
-            child: InkWell(
-              borderRadius: BorderRadius.circular(14),
-              onTap: _loading ? null : _scan,
-              child: Padding(
-                padding: const EdgeInsets.all(20),
-                child: Row(
-                  children: [
-                    const Icon(Icons.qr_code_scanner, size: 36),
-                    const SizedBox(width: 16),
-                    Expanded(
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Text('Scan the classroom QR', style: Theme.of(context).textTheme.titleMedium),
-                          const SizedBox(height: 4),
-                          Text(
-                            'Point your camera at the QR code on the teacher’s screen.',
-                            style: Theme.of(context).textTheme.bodySmall,
-                          ),
-                        ],
-                      ),
-                    ),
-                    const Icon(Icons.chevron_right),
-                  ],
-                ),
-              ),
-            ),
+            ],
           ),
+          if (_discoveredPis.isEmpty && !_scanning)
+            Padding(
+              padding: const EdgeInsets.all(8),
+              child: Text(
+                'No classroom Pis on this network. Enter the address manually below.',
+                style: Theme.of(context).textTheme.bodySmall,
+              ),
+            ),
+          ..._discoveredPis.map((pi) => Card(
+                child: ListTile(
+                  leading: Icon(
+                    pi.hasActiveClass ? Icons.podcasts : Icons.dns,
+                    color: pi.hasActiveClass ? Colors.greenAccent : null,
+                  ),
+                  title: Text(pi.activeTitle?.isNotEmpty == true
+                      ? pi.activeTitle!
+                      : 'No class in session'),
+                  subtitle: Text([
+                    pi.host,
+                    if (pi.activeTeacher?.isNotEmpty == true) pi.activeTeacher!,
+                  ].join(' · ')),
+                  enabled: pi.hasActiveClass && !_loading,
+                  trailing: const Icon(Icons.chevron_right),
+                  onTap: () => _useDiscovered(pi),
+                ),
+              )),
           const SizedBox(height: 24),
           Row(children: [
             const Expanded(child: Divider()),

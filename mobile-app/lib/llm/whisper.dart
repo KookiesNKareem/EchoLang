@@ -9,45 +9,65 @@ import 'package:cactus/cactus.dart';
 enum WhisperStatus { notReady, downloading, ready, error }
 
 class WhisperService {
-  /// `whisper-tiny` is ~75MB — fast download, English-best, multilingual ok.
-  /// `whisper-base` is ~150MB — slower but more accurate. Bump later if needed.
-  static const String modelId = 'whisper-tiny';
+  /// Cactus catalog model id. Full HuggingFace org/name form is most
+  /// resilient across SDK versions — the short alias "whisper-tiny" failed
+  /// at runtime with a "voice model not found" error on iOS. The pre-
+  /// quantized weights live at huggingface.co/Cactus-Compute/whisper-tiny.
+  /// Tiny is ~75MB and English-best, multilingual ok.
+  static const String modelId = 'Cactus-Compute/whisper-tiny';
 
-  final CactusSTT _stt = CactusSTT();
+  // Lazy: same reasoning as GemmaService — instantiating CactusSTT runs
+  // native-side init that can crash a release-mode iOS build at launch.
+  // Defer until the user enters the Record screen.
+  CactusSTT? _stt;
   WhisperStatus _status = WhisperStatus.notReady;
   WhisperStatus get status => _status;
 
   String? _statusMessage;
   String? get statusMessage => _statusMessage;
 
-  Future<void> ensureReady({void Function(double? progress, String status)? onProgress}) async {
+  // Memoize the in-flight load so background pre-load + on-demand calls
+  // from screens share a single download/init pass.
+  Future<void>? _readyFuture;
+  final List<void Function(double? progress, String status)> _listeners = [];
+
+  Future<void> ensureReady({void Function(double? progress, String status)? onProgress}) {
+    if (onProgress != null) _listeners.add(onProgress);
+    return _readyFuture ??= _load();
+  }
+
+  Future<void> _load() async {
     if (_status == WhisperStatus.ready) return;
     _status = WhisperStatus.downloading;
     try {
-      await _stt.downloadModel(
+      _stt ??= CactusSTT();
+      await _stt!.downloadModel(
         model: modelId,
         downloadProcessCallback: (progress, status, isError) {
           _statusMessage = status;
-          onProgress?.call(progress, status);
+          for (final l in _listeners) {
+            l(progress, status);
+          }
           if (isError) _status = WhisperStatus.error;
         },
       );
-      await _stt.initializeModel();
+      await _stt!.initializeModel();
       _status = WhisperStatus.ready;
       _statusMessage = 'Whisper ready';
     } catch (e) {
       _status = WhisperStatus.error;
       _statusMessage = 'Failed to load Whisper: $e';
+      _readyFuture = null; // allow retries
       rethrow;
     }
   }
 
   /// Transcribe a WAV file at [audioFilePath]. Returns the full transcript.
   Future<String> transcribeFile(String audioFilePath) async {
-    if (_status != WhisperStatus.ready) {
+    if (_status != WhisperStatus.ready || _stt == null) {
       throw StateError('Whisper not ready (status=$_status)');
     }
-    final result = await _stt.transcribe(audioFilePath: audioFilePath);
+    final result = await _stt!.transcribe(audioFilePath: audioFilePath);
     return _extractText(result);
   }
 
@@ -62,5 +82,9 @@ class WhisperService {
     return result.toString().trim();
   }
 
-  void unload() => _stt.unload();
+  void unload() {
+    _stt?.unload();
+    _stt = null;
+    _status = WhisperStatus.notReady;
+  }
 }

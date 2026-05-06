@@ -19,7 +19,11 @@ enum GemmaStatus { notReady, downloading, ready, error }
 class GemmaService {
   static const String modelId = 'google/gemma-4-E2B-it';
 
-  final CactusLM _lm = CactusLM();
+  // Lazy-constructed: instantiating CactusLM kicks off native bridge setup,
+  // which under iOS release-mode AOT can crash the app at launch if the
+  // plugin's native libs misbehave on this device. We defer until the
+  // user actually enters a screen that needs Gemma (Q&A or Record).
+  CactusLM? _lm;
   GemmaStatus _status = GemmaStatus.notReady;
   GemmaStatus get status => _status;
 
@@ -32,25 +36,37 @@ class GemmaService {
   /// Ensure the model is downloaded and initialized. Idempotent — safe to
   /// call from multiple screens; subsequent calls return immediately if
   /// the model is already loaded.
-  Future<void> ensureReady({void Function(double? progress, String status)? onProgress}) async {
+  Future<void>? _readyFuture;
+  final List<void Function(double? progress, String status)> _listeners = [];
+
+  Future<void> ensureReady({void Function(double? progress, String status)? onProgress}) {
+    if (onProgress != null) _listeners.add(onProgress);
+    return _readyFuture ??= _load();
+  }
+
+  Future<void> _load() async {
     if (_status == GemmaStatus.ready) return;
     _status = GemmaStatus.downloading;
     try {
-      await _lm.downloadModel(
+      _lm ??= CactusLM();
+      await _lm!.downloadModel(
         model: modelId,
         downloadProcessCallback: (progress, status, isError) {
           _progress = progress;
           _statusMessage = status;
-          onProgress?.call(progress, status);
+          for (final l in _listeners) {
+            l(progress, status);
+          }
           if (isError) _status = GemmaStatus.error;
         },
       );
-      await _lm.initializeModel();
+      await _lm!.initializeModel();
       _status = GemmaStatus.ready;
       _statusMessage = 'Model ready';
     } catch (e) {
       _status = GemmaStatus.error;
       _statusMessage = 'Failed to load model: $e';
+      _readyFuture = null;
       rethrow;
     }
   }
@@ -59,7 +75,7 @@ class GemmaService {
   /// Returns the full answer (Cactus's generateCompletion is non-streaming;
   /// we surface it all at once when the model finishes generating).
   Future<String> ask({required String lectureContext, required String question}) async {
-    if (_status != GemmaStatus.ready) {
+    if (_status != GemmaStatus.ready || _lm == null) {
       throw StateError('Gemma model not ready (status=$_status)');
     }
     final trimmedContext = _trimContext(lectureContext);
@@ -75,7 +91,7 @@ class GemmaService {
       ),
       ChatMessage(role: 'user', content: question),
     ];
-    final result = await _lm.generateCompletion(messages: messages);
+    final result = await _lm!.generateCompletion(messages: messages);
     if (!result.success) {
       throw Exception('Gemma generation failed');
     }
@@ -87,12 +103,12 @@ class GemmaService {
   /// Used in personal record mode (no Pi). Asks Gemma for summary +
   /// key terms + practice questions in a single JSON response.
   Future<StudyPack> generateStudyPack({required String transcript, String lang = 'en'}) async {
-    if (_status != GemmaStatus.ready) {
+    if (_status != GemmaStatus.ready || _lm == null) {
       throw StateError('Gemma not ready (status=$_status)');
     }
     final trimmed = _trimContext(transcript);
     final prompt = _studyPackPrompt(trimmed);
-    final result = await _lm.generateCompletion(messages: [
+    final result = await _lm!.generateCompletion(messages: [
       ChatMessage(role: 'user', content: prompt),
     ]);
     if (!result.success) {
@@ -115,7 +131,11 @@ class GemmaService {
     );
   }
 
-  void unload() => _lm.unload();
+  void unload() {
+    _lm?.unload();
+    _lm = null;
+    _status = GemmaStatus.notReady;
+  }
 
   String _studyPackPrompt(String transcript) => '''
 You are an academic tutor. Below is a transcript of a recorded lecture.
