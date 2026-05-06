@@ -34,9 +34,10 @@ class RecordScreen extends StatefulWidget {
   State<RecordScreen> createState() => _RecordScreenState();
 }
 
-class _RecordScreenState extends State<RecordScreen> {
+class _RecordScreenState extends State<RecordScreen> with SingleTickerProviderStateMixin {
   final AudioRecorder _recorder = AudioRecorder();
   final _titleCtrl = TextEditingController(text: 'Recorded lecture');
+  late final AnimationController _pulse;
   _Phase _phase = _Phase.idle;
   String? _statusMsg;
   Duration _elapsed = Duration.zero;
@@ -45,7 +46,17 @@ class _RecordScreenState extends State<RecordScreen> {
   DateTime? _startedAt;
 
   @override
+  void initState() {
+    super.initState();
+    _pulse = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 1200),
+    )..repeat(reverse: true);
+  }
+
+  @override
   void dispose() {
+    _pulse.dispose();
     _timer?.cancel();
     _recorder.dispose();
     _titleCtrl.dispose();
@@ -72,7 +83,7 @@ class _RecordScreenState extends State<RecordScreen> {
     );
     setState(() {
       _phase = _Phase.recording;
-      _statusMsg = 'Recording…';
+      _statusMsg = null;
       _elapsed = Duration.zero;
       _audioPath = path;
       _startedAt = DateTime.now();
@@ -108,17 +119,17 @@ class _RecordScreenState extends State<RecordScreen> {
             p != null ? 'Whisper download ${(p * 100).toStringAsFixed(0)}%' : status);
       });
 
-      setState(() => _statusMsg = 'Transcribing…');
+      setState(() => _statusMsg = 'Transcribing your lecture…');
       final transcript = await widget.whisper.transcribeFile(_audioPath!);
 
       setState(() {
         _phase = _Phase.summarizing;
-        _statusMsg = 'Loading Gemma…';
+        _statusMsg = 'Loading Gemma 4…';
       });
       await widget.gemma.ensureReady(onProgress: (p, status) {
         if (!mounted) return;
         setState(() => _statusMsg =
-            p != null ? 'Gemma download ${(p * 100).toStringAsFixed(0)}%' : status);
+            p != null ? 'Gemma 4 download ${(p * 100).toStringAsFixed(0)}%' : status);
       });
 
       setState(() => _statusMsg = 'Writing your study pack…');
@@ -141,12 +152,8 @@ class _RecordScreenState extends State<RecordScreen> {
         _phase = _Phase.done;
         _statusMsg = 'Saved.';
       });
-      // Pop back to the lectures list, which refreshes on return, then
-      // immediately drop into the new lecture.
       context.pop();
       context.push('/lecture/${Uri.encodeComponent(ref.dir.path)}');
-      // Drop the temp audio now that the user has navigated away from
-      // this screen — we don't need context anymore.
       try { await File(_audioPath!).delete(); } catch (_) {}
     } catch (e) {
       if (!mounted) return;
@@ -165,59 +172,70 @@ class _RecordScreenState extends State<RecordScreen> {
 
   @override
   Widget build(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
     return Scaffold(
-      appBar: AppBar(title: const Text('Record a lecture')),
+      appBar: AppBar(
+        leading: IconButton(
+          icon: const Icon(Icons.close_rounded),
+          onPressed: _phase == _Phase.recording ? null : () => context.pop(),
+        ),
+        title: const Text('Record a lecture'),
+      ),
       body: SafeArea(
         child: Padding(
-          padding: const EdgeInsets.all(24),
+          padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 16),
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
-              if (_phase == _Phase.idle || _phase == _Phase.recording) ...[
+              if (_phase == _Phase.idle) ...[
                 Text(
-                  'No Pi? No internet? Record the lecture here. Whisper '
-                  'transcribes on this phone, then Gemma writes you a study '
-                  'pack — all offline.',
-                  style: Theme.of(context).textTheme.bodyMedium,
+                  'No Pi? No internet?',
+                  style: Theme.of(context).textTheme.titleLarge,
                 ),
-                const SizedBox(height: 24),
+                const SizedBox(height: 4),
+                Text(
+                  'Record the lecture here. Whisper transcribes on this phone, '
+                  'then Gemma 4 writes you a study pack — all offline.',
+                  style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                        color: Colors.white.withValues(alpha: 0.6),
+                      ),
+                ),
+                const SizedBox(height: 28),
                 TextField(
                   controller: _titleCtrl,
-                  enabled: _phase == _Phase.idle,
                   decoration: const InputDecoration(
                     labelText: 'Lecture title',
-                    border: OutlineInputBorder(),
                   ),
                 ),
               ],
-              const SizedBox(height: 32),
+              const SizedBox(height: 24),
               Expanded(
                 child: Center(
-                  child: _phase == _Phase.recording
-                      ? _RecordingIndicator(elapsed: _elapsed, fmt: _fmt)
-                      : _phase == _Phase.transcribing || _phase == _Phase.summarizing
-                          ? const _Working()
-                          : const Icon(Icons.mic, size: 96, color: Colors.white24),
+                  child: switch (_phase) {
+                    _Phase.recording => _RecordingIndicator(
+                        elapsed: _elapsed, fmt: _fmt, pulse: _pulse),
+                    _Phase.transcribing || _Phase.summarizing =>
+                      _ProcessingIndicator(message: _statusMsg ?? 'Working…'),
+                    _Phase.error => _ErrorIndicator(message: _statusMsg ?? 'Something went wrong'),
+                    _ => _IdleHint(color: cs.primary),
+                  },
                 ),
               ),
-              if (_statusMsg != null) ...[
-                Text(
-                  _statusMsg!,
-                  style: Theme.of(context).textTheme.bodySmall,
-                  textAlign: TextAlign.center,
-                ),
-                const SizedBox(height: 16),
-              ],
+              const SizedBox(height: 16),
               if (_phase == _Phase.idle) ...[
                 FilledButton.icon(
                   onPressed: _startRecording,
-                  icon: const Icon(Icons.fiber_manual_record),
+                  icon: const Icon(Icons.fiber_manual_record_rounded, color: Color(0xFFE53935)),
                   label: const Text('Start recording'),
                 ),
               ] else if (_phase == _Phase.recording) ...[
                 FilledButton.icon(
                   onPressed: _stopRecording,
-                  icon: const Icon(Icons.stop),
+                  style: FilledButton.styleFrom(
+                    backgroundColor: const Color(0xFFE53935),
+                    foregroundColor: Colors.white,
+                  ),
+                  icon: const Icon(Icons.stop_rounded),
                   label: const Text('Stop & transcribe'),
                 ),
               ] else if (_phase == _Phase.error) ...[
@@ -237,27 +255,98 @@ class _RecordScreenState extends State<RecordScreen> {
   }
 }
 
+class _IdleHint extends StatelessWidget {
+  final Color color;
+  const _IdleHint({required this.color});
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      width: 160, height: 160,
+      decoration: BoxDecoration(
+        shape: BoxShape.circle,
+        gradient: RadialGradient(
+          colors: [color.withValues(alpha: 0.18), color.withValues(alpha: 0.02)],
+        ),
+      ),
+      child: Icon(Icons.mic_rounded, size: 72, color: color.withValues(alpha: 0.6)),
+    );
+  }
+}
+
 class _RecordingIndicator extends StatelessWidget {
   final Duration elapsed;
   final String Function(Duration) fmt;
-  const _RecordingIndicator({required this.elapsed, required this.fmt});
+  final AnimationController pulse;
+  const _RecordingIndicator({required this.elapsed, required this.fmt, required this.pulse});
 
   @override
   Widget build(BuildContext context) {
     return Column(
       mainAxisSize: MainAxisSize.min,
       children: [
-        Container(
-          width: 96, height: 96,
-          decoration: const BoxDecoration(
-            color: Color(0xFFE53935), shape: BoxShape.circle,
-          ),
-          child: const Icon(Icons.mic, size: 48, color: Colors.white),
+        AnimatedBuilder(
+          animation: pulse,
+          builder: (_, __) {
+            final t = pulse.value;
+            return Stack(
+              alignment: Alignment.center,
+              children: [
+                Container(
+                  width: 160 + 40 * t, height: 160 + 40 * t,
+                  decoration: BoxDecoration(
+                    shape: BoxShape.circle,
+                    color: const Color(0xFFE53935).withValues(alpha: 0.10 * (1 - t)),
+                  ),
+                ),
+                Container(
+                  width: 140, height: 140,
+                  decoration: const BoxDecoration(
+                    color: Color(0xFFE53935), shape: BoxShape.circle,
+                  ),
+                  child: const Icon(Icons.mic_rounded, size: 64, color: Colors.white),
+                ),
+              ],
+            );
+          },
         ),
-        const SizedBox(height: 16),
-        Text(fmt(elapsed),
+        const SizedBox(height: 24),
+        Text(
+          fmt(elapsed),
           style: const TextStyle(
-            fontSize: 32, fontFeatures: [FontFeature.tabularFigures()],
+            fontSize: 36, fontWeight: FontWeight.w300,
+            fontFeatures: [FontFeature.tabularFigures()],
+            letterSpacing: 1,
+          ),
+        ),
+        const SizedBox(height: 8),
+        Text(
+          'Recording…',
+          style: TextStyle(color: Colors.white.withValues(alpha: 0.5)),
+        ),
+      ],
+    );
+  }
+}
+
+class _ProcessingIndicator extends StatelessWidget {
+  final String message;
+  const _ProcessingIndicator({required this.message});
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        const SizedBox(
+          width: 64, height: 64,
+          child: CircularProgressIndicator(strokeWidth: 3),
+        ),
+        const SizedBox(height: 24),
+        Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 24),
+          child: Text(
+            message,
+            style: Theme.of(context).textTheme.titleMedium,
+            textAlign: TextAlign.center,
           ),
         ),
       ],
@@ -265,9 +354,25 @@ class _RecordingIndicator extends StatelessWidget {
   }
 }
 
-class _Working extends StatelessWidget {
-  const _Working();
+class _ErrorIndicator extends StatelessWidget {
+  final String message;
+  const _ErrorIndicator({required this.message});
   @override
-  Widget build(BuildContext context) =>
-      const Center(child: CircularProgressIndicator());
+  Widget build(BuildContext context) {
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Icon(Icons.error_outline_rounded, size: 64, color: Theme.of(context).colorScheme.error),
+        const SizedBox(height: 16),
+        Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 24),
+          child: Text(
+            message,
+            style: Theme.of(context).textTheme.bodyMedium,
+            textAlign: TextAlign.center,
+          ),
+        ),
+      ],
+    );
+  }
 }
