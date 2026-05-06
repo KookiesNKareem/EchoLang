@@ -27,8 +27,10 @@ models/
 *.gguf
 *.bin
 
-# Audio / lecture data (per-deployment)
-data/
+# Audio / lecture data (per-deployment) — root-anchored so we don't
+# accidentally swallow application data layers like mobile-app/lib/data/
+/data/
+/pi-server/data/
 *.opus
 *.wav
 *.mp3
