@@ -40,46 +40,200 @@ class _LectureScreenState extends State<LectureScreen> {
         }
         final lecture = snap.data!;
         final hasPack = lecture.studyPack != null;
-        final tabs = <String>[
-          if (hasPack) 'Study pack',
-          'Translation',
-          'Original',
+        final hasTranslation = lecture.translation.isNotEmpty;
+        final tabs = <_TabSpec>[
+          if (hasPack) const _TabSpec('Study pack', Icons.auto_stories_rounded),
+          if (hasTranslation) const _TabSpec('Translation', Icons.translate_rounded),
+          const _TabSpec('Original', Icons.subject_rounded),
         ];
         return DefaultTabController(
           length: tabs.length,
           child: Scaffold(
-            appBar: AppBar(
-              title: Text(lecture.manifest.title),
-              bottom: TabBar(tabs: tabs.map((t) => Tab(text: t)).toList()),
+            body: NestedScrollView(
+              headerSliverBuilder: (_, __) => [
+                _buildHeader(context, lecture),
+                SliverPersistentHeader(
+                  pinned: true,
+                  delegate: _TabBarDelegate(
+                    tabs: tabs.map((t) => Tab(
+                          icon: Icon(t.icon, size: 18),
+                          iconMargin: const EdgeInsets.only(bottom: 4),
+                          child: Text(t.label),
+                        )).toList(),
+                  ),
+                ),
+              ],
+              body: TabBarView(
+                children: tabs.map((t) {
+                  switch (t.label) {
+                    case 'Study pack':
+                      return _StudyPackTab(lecture: lecture);
+                    case 'Translation':
+                      return _TranscriptTab(
+                        lines: lecture.translation,
+                        isRtl: rtlLangs.contains(lecture.manifest.lang),
+                      );
+                    case 'Original':
+                    default:
+                      return _TranscriptTab(lines: lecture.transcript, isRtl: false);
+                  }
+                }).toList(),
+              ),
             ),
             floatingActionButton: FloatingActionButton.extended(
-              onPressed: () =>
-                  context.push('/qa/${Uri.encodeComponent(widget.dirPath)}'),
-              icon: const Icon(Icons.question_answer),
+              onPressed: () => context.push('/qa/${Uri.encodeComponent(widget.dirPath)}'),
+              icon: const Icon(Icons.auto_awesome_rounded),
               label: const Text('Ask Gemma'),
-            ),
-            body: TabBarView(
-              children: tabs.map((t) {
-                switch (t) {
-                  case 'Study pack':
-                    return _StudyPackTab(lecture: lecture);
-                  case 'Translation':
-                    return _TranscriptTab(
-                      lines: lecture.translation,
-                      isRtl: rtlLangs.contains(lecture.manifest.lang),
-                    );
-                  case 'Original':
-                  default:
-                    return _TranscriptTab(lines: lecture.transcript, isRtl: false);
-                }
-              }).toList(),
             ),
           ),
         );
       },
     );
   }
+
+  Widget _buildHeader(BuildContext context, Lecture lecture) {
+    final cs = Theme.of(context).colorScheme;
+    final m = lecture.manifest;
+    final duration = m.endedAt.difference(m.startedAt);
+    return SliverAppBar(
+      pinned: true,
+      expandedHeight: 196,
+      backgroundColor: const Color(0xFF101013),
+      leading: IconButton(
+        icon: const Icon(Icons.arrow_back_rounded),
+        onPressed: () => context.pop(),
+      ),
+      flexibleSpace: FlexibleSpaceBar(
+        titlePadding: const EdgeInsets.fromLTRB(56, 0, 56, 16),
+        title: Text(
+          m.title,
+          maxLines: 1, overflow: TextOverflow.ellipsis,
+          style: const TextStyle(fontWeight: FontWeight.w600, letterSpacing: -0.2),
+        ),
+        background: _HeaderBackground(lecture: lecture, cs: cs, duration: duration),
+      ),
+    );
+  }
 }
+
+class _TabSpec {
+  final String label;
+  final IconData icon;
+  const _TabSpec(this.label, this.icon);
+}
+
+class _HeaderBackground extends StatelessWidget {
+  final Lecture lecture;
+  final ColorScheme cs;
+  final Duration duration;
+  const _HeaderBackground({required this.lecture, required this.cs, required this.duration});
+
+  @override
+  Widget build(BuildContext context) {
+    final m = lecture.manifest;
+    return Stack(
+      fit: StackFit.expand,
+      children: [
+        Container(
+          decoration: BoxDecoration(
+            gradient: LinearGradient(
+              begin: Alignment.topLeft, end: Alignment.bottomRight,
+              colors: [
+                cs.primary.withValues(alpha: 0.20),
+                cs.primary.withValues(alpha: 0.04),
+                const Color(0xFF101013),
+              ],
+              stops: const [0, 0.55, 1.0],
+            ),
+          ),
+        ),
+        Positioned(
+          left: 20, right: 20, bottom: 60,
+          child: Wrap(
+            spacing: 8, runSpacing: 6,
+            children: [
+              _Chip(icon: Icons.language_rounded, label: m.lang.toUpperCase()),
+              _Chip(icon: Icons.access_time_rounded, label: _fmtDuration(duration)),
+              _Chip(icon: Icons.format_quote_rounded, label: '${m.captionCount} captions'),
+              if (m.teacher != null && m.teacher!.isNotEmpty)
+                _Chip(icon: Icons.person_outline_rounded, label: m.teacher!),
+            ],
+          ),
+        ),
+      ],
+    );
+  }
+
+  String _fmtDuration(Duration d) {
+    if (d.inMinutes < 1) return '${d.inSeconds}s';
+    if (d.inHours < 1) return '${d.inMinutes}m';
+    return '${d.inHours}h ${d.inMinutes % 60}m';
+  }
+}
+
+class _Chip extends StatelessWidget {
+  final IconData icon;
+  final String label;
+  const _Chip({required this.icon, required this.label});
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+      decoration: BoxDecoration(
+        color: Colors.white.withValues(alpha: 0.08),
+        borderRadius: BorderRadius.circular(999),
+        border: Border.all(color: Colors.white.withValues(alpha: 0.10)),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(icon, size: 13, color: Colors.white.withValues(alpha: 0.7)),
+          const SizedBox(width: 5),
+          Text(label,
+              style: const TextStyle(
+                fontSize: 12, fontWeight: FontWeight.w500, letterSpacing: 0.1,
+              )),
+        ],
+      ),
+    );
+  }
+}
+
+class _TabBarDelegate extends SliverPersistentHeaderDelegate {
+  final List<Tab> tabs;
+  _TabBarDelegate({required this.tabs});
+
+  @override
+  Widget build(BuildContext context, double shrinkOffset, bool overlapsContent) {
+    final cs = Theme.of(context).colorScheme;
+    return Container(
+      color: const Color(0xFF101013),
+      child: TabBar(
+        tabs: tabs,
+        indicatorColor: cs.primary,
+        indicatorWeight: 2.5,
+        labelColor: cs.onSurface,
+        unselectedLabelColor: Colors.white.withValues(alpha: 0.5),
+        labelStyle: const TextStyle(
+            fontSize: 13, fontWeight: FontWeight.w600, letterSpacing: 0.1),
+        unselectedLabelStyle: const TextStyle(fontSize: 13),
+        dividerColor: Colors.white.withValues(alpha: 0.06),
+      ),
+    );
+  }
+
+  @override
+  double get maxExtent => 64;
+  @override
+  double get minExtent => 64;
+  @override
+  bool shouldRebuild(_TabBarDelegate oldDelegate) => false;
+}
+
+// =================================================================
+// Study pack tab
+// =================================================================
 
 class _StudyPackTab extends StatelessWidget {
   final Lecture lecture;
@@ -88,73 +242,191 @@ class _StudyPackTab extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final pack = lecture.studyPack;
-    if (pack == null) return const Center(child: Text('No study pack in this bundle.'));
+    if (pack == null) {
+      return const Center(child: Text('No study pack in this bundle.'));
+    }
     final isRtl = rtlLangs.contains(lecture.manifest.lang);
+    final dir = isRtl ? TextDirection.rtl : TextDirection.ltr;
+    final align = isRtl ? CrossAxisAlignment.end : CrossAxisAlignment.start;
+    final tAlign = isRtl ? TextAlign.end : TextAlign.start;
     return ListView(
-      padding: const EdgeInsets.all(16),
+      padding: const EdgeInsets.fromLTRB(20, 20, 20, 100),
       children: [
-        Card(
-          child: Padding(
-            padding: const EdgeInsets.all(16),
-            child: Column(
-              crossAxisAlignment: isRtl ? CrossAxisAlignment.end : CrossAxisAlignment.start,
-              children: [
-                Text('Summary', style: Theme.of(context).textTheme.titleMedium),
-                const SizedBox(height: 8),
-                Text(
-                  pack.summary,
-                  textAlign: isRtl ? TextAlign.end : TextAlign.start,
-                  textDirection: isRtl ? TextDirection.rtl : TextDirection.ltr,
-                ),
-              ],
-            ),
+        _SectionHeader(icon: Icons.auto_stories_rounded, label: 'Summary'),
+        const SizedBox(height: 10),
+        Container(
+          padding: const EdgeInsets.all(16),
+          decoration: _softCard(context),
+          child: Column(
+            crossAxisAlignment: align,
+            children: [
+              Text(
+                pack.summary,
+                textAlign: tAlign,
+                textDirection: dir,
+                style: const TextStyle(fontSize: 15.5, height: 1.55),
+              ),
+            ],
           ),
         ),
         if (pack.keyTerms.isNotEmpty) ...[
-          const SizedBox(height: 24),
-          Text('Key terms', style: Theme.of(context).textTheme.titleMedium),
-          const SizedBox(height: 8),
-          ...pack.keyTerms.map(
-            (kt) => Card(
-              child: Padding(
-                padding: const EdgeInsets.all(12),
-                child: Column(
-                  crossAxisAlignment: isRtl ? CrossAxisAlignment.end : CrossAxisAlignment.start,
-                  children: [
-                    Text(
-                      kt.term,
-                      style: Theme.of(context).textTheme.titleSmall,
-                      textDirection: isRtl ? TextDirection.rtl : TextDirection.ltr,
-                    ),
-                    Text(
-                      kt.definition,
-                      textDirection: isRtl ? TextDirection.rtl : TextDirection.ltr,
-                    ),
-                  ],
-                ),
-              ),
-            ),
-          ),
+          const SizedBox(height: 28),
+          _SectionHeader(icon: Icons.key_rounded, label: 'Key terms', count: pack.keyTerms.length),
+          const SizedBox(height: 10),
+          ...pack.keyTerms.map((kt) => _KeyTermCard(kt: kt, dir: dir, align: align, tAlign: tAlign)),
         ],
         if (pack.practiceQuestions.isNotEmpty) ...[
-          const SizedBox(height: 24),
-          Text('Practice questions', style: Theme.of(context).textTheme.titleMedium),
-          const SizedBox(height: 8),
+          const SizedBox(height: 28),
+          _SectionHeader(
+              icon: Icons.quiz_rounded,
+              label: 'Practice questions',
+              count: pack.practiceQuestions.length),
+          const SizedBox(height: 10),
           ...pack.practiceQuestions.asMap().entries.map(
-                (e) => Padding(
-                  padding: const EdgeInsets.symmetric(vertical: 4),
-                  child: Text(
-                    '${e.key + 1}. ${e.value}',
-                    textDirection: isRtl ? TextDirection.rtl : TextDirection.ltr,
-                  ),
-                ),
+                (e) => _PracticeRow(index: e.key + 1, text: e.value, dir: dir, tAlign: tAlign),
               ),
         ],
-        const SizedBox(height: 80),
       ],
     );
   }
 }
+
+class _SectionHeader extends StatelessWidget {
+  final IconData icon;
+  final String label;
+  final int? count;
+  const _SectionHeader({required this.icon, required this.label, this.count});
+
+  @override
+  Widget build(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
+    return Row(
+      children: [
+        Icon(icon, size: 18, color: cs.primary),
+        const SizedBox(width: 8),
+        Text(label,
+            style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w600, letterSpacing: 0.5)),
+        if (count != null) ...[
+          const SizedBox(width: 8),
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 2),
+            decoration: BoxDecoration(
+              color: cs.primary.withValues(alpha: 0.12),
+              borderRadius: BorderRadius.circular(8),
+            ),
+            child: Text(
+              '$count',
+              style: TextStyle(
+                fontSize: 11, fontWeight: FontWeight.w600, color: cs.primary,
+                fontFeatures: const [FontFeature.tabularFigures()],
+              ),
+            ),
+          ),
+        ],
+      ],
+    );
+  }
+}
+
+class _KeyTermCard extends StatelessWidget {
+  final KeyTerm kt;
+  final TextDirection dir;
+  final CrossAxisAlignment align;
+  final TextAlign tAlign;
+  const _KeyTermCard({required this.kt, required this.dir, required this.align, required this.tAlign});
+
+  @override
+  Widget build(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 10),
+      child: Container(
+        padding: const EdgeInsets.all(14),
+        decoration: _softCard(context),
+        child: Column(
+          crossAxisAlignment: align,
+          children: [
+            Text(
+              kt.term,
+              style: TextStyle(
+                fontSize: 15, fontWeight: FontWeight.w600,
+                color: cs.primary, letterSpacing: -0.2,
+              ),
+              textDirection: dir, textAlign: tAlign,
+            ),
+            const SizedBox(height: 4),
+            Text(
+              kt.definition,
+              style: TextStyle(
+                fontSize: 14, height: 1.45,
+                color: Colors.white.withValues(alpha: 0.78),
+              ),
+              textDirection: dir, textAlign: tAlign,
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _PracticeRow extends StatelessWidget {
+  final int index;
+  final String text;
+  final TextDirection dir;
+  final TextAlign tAlign;
+  const _PracticeRow({
+    required this.index,
+    required this.text,
+    required this.dir,
+    required this.tAlign,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 10),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Container(
+            width: 26, height: 26,
+            margin: const EdgeInsets.only(top: 1),
+            decoration: BoxDecoration(
+              shape: BoxShape.circle,
+              color: cs.primary.withValues(alpha: 0.14),
+            ),
+            child: Center(
+              child: Text(
+                '$index',
+                style: TextStyle(
+                  fontSize: 12, fontWeight: FontWeight.w600, color: cs.primary,
+                  fontFeatures: const [FontFeature.tabularFigures()],
+                ),
+              ),
+            ),
+          ),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Padding(
+              padding: const EdgeInsets.only(top: 3),
+              child: Text(
+                text,
+                textDirection: dir, textAlign: tAlign,
+                style: const TextStyle(fontSize: 14.5, height: 1.5),
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+// =================================================================
+// Transcript tab (Translation + Original both render here)
+// =================================================================
 
 class _TranscriptTab extends StatelessWidget {
   final List<TranscriptLine> lines;
@@ -164,21 +436,50 @@ class _TranscriptTab extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     if (lines.isEmpty) {
-      return const Center(child: Text('No content for this language yet.'));
+      return const Center(
+        child: Padding(
+          padding: EdgeInsets.all(32),
+          child: Text(
+            'No content for this language yet.',
+            textAlign: TextAlign.center,
+          ),
+        ),
+      );
     }
+    final dir = isRtl ? TextDirection.rtl : TextDirection.ltr;
+    final tAlign = isRtl ? TextAlign.end : TextAlign.start;
     return ListView.separated(
-      padding: const EdgeInsets.all(16),
+      padding: const EdgeInsets.fromLTRB(20, 20, 20, 100),
       itemCount: lines.length,
-      separatorBuilder: (_, __) => const SizedBox(height: 8),
+      separatorBuilder: (_, __) => const SizedBox(height: 14),
       itemBuilder: (_, i) {
         final l = lines[i];
-        return Column(
-          crossAxisAlignment: isRtl ? CrossAxisAlignment.end : CrossAxisAlignment.start,
+        return Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Text(l.timestamp, style: Theme.of(context).textTheme.labelSmall),
-            Text(
-              l.text,
-              textDirection: isRtl ? TextDirection.rtl : TextDirection.ltr,
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+              margin: const EdgeInsets.only(top: 2),
+              decoration: BoxDecoration(
+                color: Colors.white.withValues(alpha: 0.06),
+                borderRadius: BorderRadius.circular(6),
+              ),
+              child: Text(
+                l.timestamp,
+                style: TextStyle(
+                  fontSize: 11,
+                  color: Colors.white.withValues(alpha: 0.55),
+                  fontFeatures: const [FontFeature.tabularFigures()],
+                ),
+              ),
+            ),
+            const SizedBox(width: 12),
+            Expanded(
+              child: Text(
+                l.text,
+                textDirection: dir, textAlign: tAlign,
+                style: const TextStyle(fontSize: 15, height: 1.55),
+              ),
             ),
           ],
         );
@@ -186,3 +487,13 @@ class _TranscriptTab extends StatelessWidget {
     );
   }
 }
+
+// =================================================================
+// Shared helpers
+// =================================================================
+
+BoxDecoration _softCard(BuildContext context) => BoxDecoration(
+      color: const Color(0xFF1A1A1F),
+      borderRadius: BorderRadius.circular(16),
+      border: Border.all(color: Colors.white.withValues(alpha: 0.06)),
+    );

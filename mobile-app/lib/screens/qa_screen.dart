@@ -27,19 +27,32 @@ class _ChatMessage {
   _ChatMessage({required this.fromUser, required this.text});
 }
 
-class _QAScreenState extends State<QAScreen> {
+class _QAScreenState extends State<QAScreen> with SingleTickerProviderStateMixin {
   Lecture? _lecture;
   final List<_ChatMessage> _messages = [];
   final TextEditingController _input = TextEditingController();
   final ScrollController _scroll = ScrollController();
+  late final AnimationController _typingDots;
   bool _generating = false;
   String? _modelStatus;
 
   @override
   void initState() {
     super.initState();
+    _typingDots = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 1200),
+    )..repeat();
     _loadLecture();
     _ensureModel();
+  }
+
+  @override
+  void dispose() {
+    _typingDots.dispose();
+    _input.dispose();
+    _scroll.dispose();
+    super.dispose();
   }
 
   Future<void> _loadLecture() async {
@@ -49,26 +62,28 @@ class _QAScreenState extends State<QAScreen> {
 
   Future<void> _ensureModel() async {
     if (widget.gemma.status == GemmaStatus.ready) {
-      setState(() => _modelStatus = 'Model ready');
+      setState(() => _modelStatus = null);
       return;
     }
-    setState(() => _modelStatus = 'Loading model…');
+    setState(() => _modelStatus = 'Loading Gemma 4…');
     try {
       await widget.gemma.ensureReady(
         onProgress: (p, status) {
           if (!mounted) return;
           setState(() => _modelStatus =
-              p != null ? '${(p * 100).toStringAsFixed(0)}% — $status' : status);
+              p != null && p < 0.999
+                  ? 'Loading Gemma 4 — ${(p * 100).toStringAsFixed(0)}%'
+                  : status);
         },
       );
-      if (mounted) setState(() => _modelStatus = 'Model ready');
+      if (mounted) setState(() => _modelStatus = null);
     } catch (e) {
-      if (mounted) setState(() => _modelStatus = 'Model error: $e');
+      if (mounted) setState(() => _modelStatus = 'Couldn’t load Gemma: $e');
     }
   }
 
-  Future<void> _send() async {
-    final q = _input.text.trim();
+  Future<void> _send([String? prefilled]) async {
+    final q = (prefilled ?? _input.text).trim();
     if (q.isEmpty || _generating || _lecture == null) return;
     if (widget.gemma.status != GemmaStatus.ready) {
       ScaffoldMessenger.of(context).showSnackBar(
@@ -79,7 +94,7 @@ class _QAScreenState extends State<QAScreen> {
     setState(() {
       _input.clear();
       _messages.add(_ChatMessage(fromUser: true, text: q));
-      _messages.add(_ChatMessage(fromUser: false, text: '…'));
+      _messages.add(_ChatMessage(fromUser: false, text: ''));
       _generating = true;
     });
     _scrollToBottom();
@@ -105,75 +120,79 @@ class _QAScreenState extends State<QAScreen> {
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!_scroll.hasClients) return;
       _scroll.animateTo(_scroll.position.maxScrollExtent,
-          duration: const Duration(milliseconds: 250), curve: Curves.easeOut);
+          duration: const Duration(milliseconds: 280), curve: Curves.easeOutCubic);
     });
   }
 
   @override
   Widget build(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
     return Scaffold(
       appBar: AppBar(
-        title: const Text('Ask about this lecture'),
-        bottom: PreferredSize(
-          preferredSize: const Size.fromHeight(20),
-          child: Padding(
-            padding: const EdgeInsets.only(left: 16, bottom: 8),
-            child: Align(
-              alignment: Alignment.centerLeft,
-              child: Text(
-                _modelStatus ?? '',
-                style: Theme.of(context).textTheme.labelSmall,
-              ),
+        title: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Text(
+              _lecture?.manifest.title ?? 'Lecture',
+              maxLines: 1, overflow: TextOverflow.ellipsis,
+              style: Theme.of(context).textTheme.titleMedium,
             ),
-          ),
+            Row(
+              children: [
+                Container(
+                  width: 6, height: 6,
+                  decoration: BoxDecoration(
+                    shape: BoxShape.circle,
+                    color: widget.gemma.status == GemmaStatus.ready
+                        ? const Color(0xFF7AE0A0)
+                        : cs.outline,
+                  ),
+                ),
+                const SizedBox(width: 6),
+                Text(
+                  _modelStatus ?? 'Gemma 4 · on this phone',
+                  style: Theme.of(context).textTheme.labelSmall?.copyWith(
+                        color: Colors.white.withValues(alpha: 0.55),
+                      ),
+                ),
+              ],
+            ),
+          ],
         ),
       ),
       body: Column(
         children: [
           Expanded(
             child: _messages.isEmpty
-                ? _Suggestions(
+                ? _Welcome(
                     pack: _lecture?.studyPack,
-                    onPick: (q) {
-                      _input.text = q;
-                      _send();
-                    },
+                    onPick: (q) => _send(q),
                   )
                 : ListView.builder(
                     controller: _scroll,
-                    padding: const EdgeInsets.all(12),
+                    padding: const EdgeInsets.fromLTRB(16, 16, 16, 8),
                     itemCount: _messages.length,
-                    itemBuilder: (_, i) => _Bubble(msg: _messages[i]),
+                    itemBuilder: (_, i) {
+                      final m = _messages[i];
+                      // Show typing dots only on the trailing empty assistant
+                      // message while we're still generating.
+                      final showTyping = !m.fromUser &&
+                          m.text.isEmpty &&
+                          i == _messages.length - 1 &&
+                          _generating;
+                      return _Bubble(
+                        msg: m,
+                        showTyping: showTyping,
+                        typingDots: _typingDots,
+                      );
+                    },
                   ),
           ),
-          SafeArea(
-            top: false,
-            child: Padding(
-              padding: const EdgeInsets.all(12),
-              child: Row(
-                crossAxisAlignment: CrossAxisAlignment.end,
-                children: [
-                  Expanded(
-                    child: TextField(
-                      controller: _input,
-                      enabled: !_generating,
-                      decoration: const InputDecoration(
-                        hintText: 'Ask a question…',
-                        border: OutlineInputBorder(),
-                      ),
-                      minLines: 1,
-                      maxLines: 4,
-                      onSubmitted: (_) => _send(),
-                    ),
-                  ),
-                  const SizedBox(width: 8),
-                  FilledButton(
-                    onPressed: _generating ? null : _send,
-                    child: const Text('Send'),
-                  ),
-                ],
-              ),
-            ),
+          _Composer(
+            controller: _input,
+            enabled: !_generating && widget.gemma.status == GemmaStatus.ready,
+            onSubmit: () => _send(),
           ),
         ],
       ),
@@ -181,26 +200,88 @@ class _QAScreenState extends State<QAScreen> {
   }
 }
 
-class _Bubble extends StatelessWidget {
-  final _ChatMessage msg;
-  const _Bubble({required this.msg});
+class _Welcome extends StatelessWidget {
+  final StudyPack? pack;
+  final void Function(String) onPick;
+  const _Welcome({required this.pack, required this.onPick});
 
   @override
   Widget build(BuildContext context) {
-    final align = msg.fromUser ? Alignment.centerRight : Alignment.centerLeft;
     final cs = Theme.of(context).colorScheme;
-    final bg = msg.fromUser ? cs.primary : cs.surfaceContainerHighest;
-    final fg = msg.fromUser ? cs.onPrimary : cs.onSurface;
+    final qs = pack?.practiceQuestions ?? const [];
+    return ListView(
+      padding: const EdgeInsets.fromLTRB(20, 28, 20, 24),
+      children: [
+        Container(
+          width: 64, height: 64,
+          decoration: BoxDecoration(
+            shape: BoxShape.circle,
+            gradient: LinearGradient(
+              begin: Alignment.topLeft, end: Alignment.bottomRight,
+              colors: [
+                cs.primary.withValues(alpha: 0.32),
+                cs.primary.withValues(alpha: 0.05),
+              ],
+            ),
+          ),
+          child: Icon(Icons.auto_awesome_rounded, color: cs.primary, size: 28),
+        ),
+        const SizedBox(height: 18),
+        Text('Ask anything about this lecture',
+            style: Theme.of(context).textTheme.titleLarge),
+        const SizedBox(height: 6),
+        Text(
+          'Gemma 4 runs on this phone. Nothing leaves your device — '
+          'works on the bus, on a plane, with no signal.',
+          style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                color: Colors.white.withValues(alpha: 0.6),
+              ),
+        ),
+        if (qs.isNotEmpty) ...[
+          const SizedBox(height: 28),
+          Text('Try one of these',
+              style: Theme.of(context).textTheme.labelLarge?.copyWith(
+                    color: Colors.white.withValues(alpha: 0.7),
+                  )),
+          const SizedBox(height: 10),
+          ...qs.take(4).map((q) => _SuggestionTile(text: q, onTap: () => onPick(q))),
+        ],
+      ],
+    );
+  }
+}
+
+class _SuggestionTile extends StatelessWidget {
+  final String text;
+  final VoidCallback onTap;
+  const _SuggestionTile({required this.text, required this.onTap});
+
+  @override
+  Widget build(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
     return Padding(
-      padding: const EdgeInsets.symmetric(vertical: 4),
-      child: Align(
-        alignment: align,
-        child: ConstrainedBox(
-          constraints: BoxConstraints(maxWidth: MediaQuery.of(context).size.width * 0.85),
+      padding: const EdgeInsets.only(bottom: 8),
+      child: Material(
+        color: Colors.transparent,
+        child: InkWell(
+          onTap: onTap,
+          borderRadius: BorderRadius.circular(14),
           child: Container(
-            padding: const EdgeInsets.all(12),
-            decoration: BoxDecoration(color: bg, borderRadius: BorderRadius.circular(14)),
-            child: Text(msg.text, style: TextStyle(color: fg)),
+            padding: const EdgeInsets.all(14),
+            decoration: BoxDecoration(
+              color: cs.surfaceContainerHighest.withValues(alpha: 0.5),
+              borderRadius: BorderRadius.circular(14),
+              border: Border.all(color: Colors.white.withValues(alpha: 0.06)),
+            ),
+            child: Row(
+              children: [
+                Icon(Icons.help_outline_rounded, size: 18, color: cs.primary),
+                const SizedBox(width: 10),
+                Expanded(child: Text(text, style: const TextStyle(height: 1.35))),
+                Icon(Icons.chevron_right_rounded,
+                    color: Colors.white.withValues(alpha: 0.3), size: 18),
+              ],
+            ),
           ),
         ),
       ),
@@ -208,44 +289,216 @@ class _Bubble extends StatelessWidget {
   }
 }
 
-class _Suggestions extends StatelessWidget {
-  final StudyPack? pack;
-  final void Function(String) onPick;
-  const _Suggestions({required this.pack, required this.onPick});
+class _Bubble extends StatefulWidget {
+  final _ChatMessage msg;
+  final bool showTyping;
+  final AnimationController typingDots;
+  const _Bubble({
+    required this.msg,
+    required this.showTyping,
+    required this.typingDots,
+  });
+
+  @override
+  State<_Bubble> createState() => _BubbleState();
+}
+
+class _BubbleState extends State<_Bubble> with SingleTickerProviderStateMixin {
+  late final AnimationController _enter;
+  late final Animation<double> _fade;
+  late final Animation<Offset> _slide;
+
+  @override
+  void initState() {
+    super.initState();
+    _enter = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 220),
+    );
+    _fade = CurvedAnimation(parent: _enter, curve: Curves.easeOut);
+    _slide = Tween<Offset>(
+      begin: const Offset(0, 0.08),
+      end: Offset.zero,
+    ).animate(_fade);
+    _enter.forward();
+  }
+
+  @override
+  void dispose() {
+    _enter.dispose();
+    super.dispose();
+  }
 
   @override
   Widget build(BuildContext context) {
-    final qs = pack?.practiceQuestions ?? const [];
-    if (qs.isEmpty) {
-      return Center(
+    final m = widget.msg;
+    final align = m.fromUser ? Alignment.centerRight : Alignment.centerLeft;
+    final cs = Theme.of(context).colorScheme;
+    final bg = m.fromUser ? cs.primary : cs.surfaceContainerHighest;
+    final fg = m.fromUser ? cs.onPrimary : cs.onSurface;
+    return FadeTransition(
+      opacity: _fade,
+      child: SlideTransition(
+        position: _slide,
         child: Padding(
-          padding: const EdgeInsets.all(24),
-          child: Text(
-            'Ask anything about today’s lecture. Gemma is running on this phone — no internet needed.',
-            style: Theme.of(context).textTheme.bodyMedium,
-            textAlign: TextAlign.center,
-          ),
-        ),
-      );
-    }
-    return ListView(
-      padding: const EdgeInsets.all(12),
-      children: [
-        Text('Suggested questions', style: Theme.of(context).textTheme.titleSmall),
-        const SizedBox(height: 8),
-        ...qs.take(4).map(
-              (q) => Card(
-                child: InkWell(
-                  borderRadius: BorderRadius.circular(14),
-                  onTap: () => onPick(q),
-                  child: Padding(
-                    padding: const EdgeInsets.all(12),
-                    child: Text(q),
+          padding: const EdgeInsets.symmetric(vertical: 4),
+          child: Column(
+            crossAxisAlignment: m.fromUser ? CrossAxisAlignment.end : CrossAxisAlignment.start,
+            children: [
+              if (!m.fromUser)
+                Padding(
+                  padding: const EdgeInsets.only(left: 4, bottom: 4),
+                  child: Text(
+                    'Gemma 4',
+                    style: TextStyle(
+                      color: Colors.white.withValues(alpha: 0.45),
+                      fontSize: 11,
+                      letterSpacing: 0.3,
+                      fontWeight: FontWeight.w500,
+                    ),
+                  ),
+                ),
+              Align(
+                alignment: align,
+                child: ConstrainedBox(
+                  constraints: BoxConstraints(maxWidth: MediaQuery.of(context).size.width * 0.85),
+                  child: Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+                    decoration: BoxDecoration(
+                      color: bg,
+                      borderRadius: BorderRadius.only(
+                        topLeft: const Radius.circular(16),
+                        topRight: const Radius.circular(16),
+                        bottomLeft: Radius.circular(m.fromUser ? 16 : 4),
+                        bottomRight: Radius.circular(m.fromUser ? 4 : 16),
+                      ),
+                    ),
+                    child: widget.showTyping
+                        ? _TypingDots(controller: widget.typingDots, color: fg)
+                        : SelectableText(
+                            m.text,
+                            style: TextStyle(color: fg, fontSize: 15.5, height: 1.4),
+                          ),
                   ),
                 ),
               ),
-            ),
-      ],
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _TypingDots extends StatelessWidget {
+  final AnimationController controller;
+  final Color color;
+  const _TypingDots({required this.controller, required this.color});
+
+  @override
+  Widget build(BuildContext context) {
+    return SizedBox(
+      width: 36, height: 18,
+      child: AnimatedBuilder(
+        animation: controller,
+        builder: (_, __) {
+          double opacity(int i) {
+            // Stagger 3 dots so they pulse out of phase.
+            final phase = (controller.value - i * 0.25) % 1.0;
+            // Triangular pulse: 0 -> 1 -> 0 across the period.
+            return phase < 0.5
+                ? 0.3 + 0.7 * (phase * 2)
+                : 0.3 + 0.7 * (1 - (phase - 0.5) * 2);
+          }
+          Widget dot(int i) => Container(
+                width: 7, height: 7,
+                decoration: BoxDecoration(
+                  shape: BoxShape.circle,
+                  color: color.withValues(alpha: opacity(i).clamp(0.3, 1.0)),
+                ),
+              );
+          return Row(
+            mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+            children: [dot(0), dot(1), dot(2)],
+          );
+        },
+      ),
+    );
+  }
+}
+
+class _Composer extends StatelessWidget {
+  final TextEditingController controller;
+  final bool enabled;
+  final VoidCallback onSubmit;
+  const _Composer({
+    required this.controller,
+    required this.enabled,
+    required this.onSubmit,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
+    return SafeArea(
+      top: false,
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(12, 8, 12, 12),
+        child: Container(
+          decoration: BoxDecoration(
+            color: cs.surfaceContainerHighest.withValues(alpha: 0.6),
+            borderRadius: BorderRadius.circular(28),
+            border: Border.all(color: Colors.white.withValues(alpha: 0.08)),
+          ),
+          padding: const EdgeInsets.fromLTRB(16, 4, 4, 4),
+          child: Row(
+            crossAxisAlignment: CrossAxisAlignment.end,
+            children: [
+              Expanded(
+                child: TextField(
+                  controller: controller,
+                  enabled: enabled,
+                  decoration: const InputDecoration(
+                    hintText: 'Ask Gemma about this lecture…',
+                    border: InputBorder.none,
+                    enabledBorder: InputBorder.none,
+                    focusedBorder: InputBorder.none,
+                    contentPadding: EdgeInsets.symmetric(vertical: 14),
+                    isDense: true,
+                  ),
+                  minLines: 1,
+                  maxLines: 5,
+                  textInputAction: TextInputAction.send,
+                  onSubmitted: (_) => onSubmit(),
+                ),
+              ),
+              const SizedBox(width: 4),
+              ValueListenableBuilder<TextEditingValue>(
+                valueListenable: controller,
+                builder: (_, v, __) {
+                  final canSend = enabled && v.text.trim().isNotEmpty;
+                  return AnimatedContainer(
+                    duration: const Duration(milliseconds: 180),
+                    width: 44, height: 44,
+                    decoration: BoxDecoration(
+                      shape: BoxShape.circle,
+                      color: canSend ? cs.primary : cs.surfaceContainerHighest,
+                    ),
+                    child: IconButton(
+                      icon: Icon(
+                        Icons.arrow_upward_rounded,
+                        color: canSend ? cs.onPrimary : Colors.white.withValues(alpha: 0.3),
+                        size: 22,
+                      ),
+                      onPressed: canSend ? onSubmit : null,
+                    ),
+                  );
+                },
+              ),
+            ],
+          ),
+        ),
+      ),
     );
   }
 }
