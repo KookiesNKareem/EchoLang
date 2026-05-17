@@ -104,6 +104,13 @@ class BundleStore {
     if (await dir.exists()) await dir.delete(recursive: true);
   }
 
+  Future<void> renameLecture({required Directory dir, required String title}) async {
+    final manifestFile = File('${dir.path}/manifest.json');
+    final raw = jsonDecode(await manifestFile.readAsString()) as Map<String, dynamic>;
+    raw['title'] = title;
+    await manifestFile.writeAsString(const JsonEncoder.withIndent('  ').convert(raw));
+  }
+
   /// Save a locally-recorded lecture in the same on-disk shape Pi bundles
   /// have, so the rest of the app (lecture viewer, Q&A) treats it identically.
   ///

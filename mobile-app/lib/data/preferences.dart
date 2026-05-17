@@ -8,6 +8,17 @@ import 'dart:io';
 
 import 'package:path_provider/path_provider.dart';
 
+const Map<String, String> langNames = {
+  'en': 'English',
+  'ar': 'Arabic',
+  'uk': 'Ukrainian',
+  'es': 'Spanish',
+  'zh': 'Chinese',
+  'fr': 'French',
+  'ps': 'Pashto',
+  'fa': 'Persian',
+};
+
 class Preferences {
   static Future<File> _file() async {
     final docs = await getApplicationDocumentsDirectory();
