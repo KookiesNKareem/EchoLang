@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 
 import 'package:flutter_gemma/flutter_gemma.dart';
@@ -104,6 +105,42 @@ class GemmaService {
   int? _primedContextHash;
   final Map<String, Future<QAStarters>> _startersCache = {};
 
+  /// Global serialization gate: every public inference call (prime,
+  /// generateStarters, ask, translate, study pack, quiz) chains onto this
+  /// future before touching the model. Two concurrent createChat() calls
+  /// against the same InferenceModel on iOS leak context across sessions
+  /// — the second call's chat ends up replaying the first's prompt. Until
+  /// flutter_gemma isolates that properly, we never let two ops overlap.
+  Future<void> _inferenceGate = Future.value();
+
+  Future<T> _serialize<T>(Future<T> Function() op) {
+    final prev = _inferenceGate;
+    final completer = Completer<void>();
+    _inferenceGate = completer.future;
+    return prev.then((_) async {
+      try {
+        return await op();
+      } finally {
+        completer.complete();
+      }
+    });
+  }
+
+  /// Stream-shaped variant of [_serialize]. Holds the gate for the
+  /// entire lifetime of the inner stream so other inference operations
+  /// queue up behind it.
+  Stream<T> _serializeStream<T>(Stream<T> Function() op) async* {
+    final prev = _inferenceGate;
+    final completer = Completer<void>();
+    _inferenceGate = completer.future;
+    try {
+      await prev;
+      yield* op();
+    } finally {
+      completer.complete();
+    }
+  }
+
   Future<void>? _readyFuture;
   final List<void Function(double? progress, String status)> _listeners = [];
 
@@ -164,7 +201,13 @@ class GemmaService {
   }
 
   /// Prime the chat with a lecture transcript so the prefill is paid once instead of on every question.
-  Future<void> primeContext(String lectureContext) async {
+  Future<void> primeContext(String lectureContext) =>
+      _serialize(() => _primeContextLocked(lectureContext));
+
+  /// Inner body of primeContext, assumes the inference gate is already held.
+  /// Callers in this file that are themselves inside the gate must use this
+  /// version instead of the public [primeContext] to avoid a deadlock.
+  Future<void> _primeContextLocked(String lectureContext) async {
     if (_status != GemmaStatus.ready || _model == null) {
       throw StateError('Gemma not ready (status=$_status)');
     }
@@ -189,6 +232,18 @@ class GemmaService {
   /// an [AskCitation] event so the UI can render an inline chip — the
   /// answer is verifiably backed by the transcript, not invented.
   Stream<AskEvent> askWithToolsStream({
+    required List<TranscriptLine> transcript,
+    required List<KeyTerm> keyTerms,
+    required String question,
+  }) {
+    return _serializeStream(() => _askWithToolsStreamInner(
+          transcript: transcript,
+          keyTerms: keyTerms,
+          question: question,
+        ));
+  }
+
+  Stream<AskEvent> _askWithToolsStreamInner({
     required List<TranscriptLine> transcript,
     required List<KeyTerm> keyTerms,
     required String question,
@@ -356,8 +411,18 @@ class GemmaService {
   Stream<String> askStream({
     required String lectureContext,
     required String question,
+  }) {
+    return _serializeStream(() => _askStreamInner(
+          lectureContext: lectureContext,
+          question: question,
+        ));
+  }
+
+  Stream<String> _askStreamInner({
+    required String lectureContext,
+    required String question,
   }) async* {
-    await primeContext(lectureContext);
+    await _primeContextLocked(lectureContext);
     await _chat!.addQueryChunk(Message.text(text: question, isUser: true));
     await for (final chunk in _chat!.generateChatResponseAsync()) {
       switch (chunk) {
@@ -393,6 +458,18 @@ class GemmaService {
     required String lectureContext,
     required String question,
     bool freshChat = false,
+  }) {
+    return _serialize(() => _benchAskInner(
+          lectureContext: lectureContext,
+          question: question,
+          freshChat: freshChat,
+        ));
+  }
+
+  Future<GemmaBenchResult> _benchAskInner({
+    required String lectureContext,
+    required String question,
+    bool freshChat = false,
   }) async {
     if (_status != GemmaStatus.ready || _model == null) {
       throw StateError('Gemma not ready (status=$_status)');
@@ -408,7 +485,7 @@ class GemmaService {
       await chat.addQueryChunk(Message.text(text: preamble, isUser: true));
       await chat.addQueryChunk(Message.text(text: question, isUser: true));
     } else {
-      await primeContext(lectureContext);
+      await _primeContextLocked(lectureContext);
       chat = _chat!;
       await chat.addQueryChunk(Message.text(text: question, isUser: true));
     }
@@ -457,7 +534,8 @@ class GemmaService {
     final key = '${trimmed.hashCode}|$languageName';
     return _startersCache.putIfAbsent(
       key,
-      () => _generateStarters(trimmed, languageName).catchError((e) {
+      () => _serialize(() => _generateStarters(trimmed, languageName))
+          .catchError((e) {
         _startersCache.remove(key);
         throw e;
       }),
@@ -524,6 +602,16 @@ class GemmaService {
   Stream<String> translateStream({
     required String text,
     required String targetLanguageName,
+  }) {
+    return _serializeStream(() => _translateStreamInner(
+          text: text,
+          targetLanguageName: targetLanguageName,
+        ));
+  }
+
+  Stream<String> _translateStreamInner({
+    required String text,
+    required String targetLanguageName,
   }) async* {
     if (_status != GemmaStatus.ready || _model == null) {
       throw StateError('Gemma not ready (status=$_status)');
@@ -551,30 +639,32 @@ class GemmaService {
     required String transcript,
     String lang = 'en',
     String languageName = 'English',
-  }) async {
-    if (_status != GemmaStatus.ready || _model == null) {
-      throw StateError('Gemma not ready (status=$_status)');
-    }
-    final prompt = _studyPackPrompt(_trimContext(transcript), languageName);
-    final chat = await _model!.createChat();
-    await chat.addQueryChunk(Message.text(text: prompt, isUser: true));
-    final response = await chat.generateChatResponse();
-    final raw = _extractText(response);
-    final json = _extractJson(raw);
-    return StudyPack(
-      lang: lang,
-      summary: (json['summary'] as String?) ?? raw,
-      keyTerms: ((json['key_terms'] as List?) ?? const [])
-          .whereType<Map>()
-          .map((m) => KeyTerm(
-                term: (m['term'] as String?) ?? '',
-                definition: (m['definition'] as String?) ?? '',
-              ))
-          .toList(),
-      practiceQuestions: ((json['practice_questions'] as List?) ?? const [])
-          .whereType<String>()
-          .toList(),
-    );
+  }) {
+    return _serialize(() async {
+      if (_status != GemmaStatus.ready || _model == null) {
+        throw StateError('Gemma not ready (status=$_status)');
+      }
+      final prompt = _studyPackPrompt(_trimContext(transcript), languageName);
+      final chat = await _model!.createChat();
+      await chat.addQueryChunk(Message.text(text: prompt, isUser: true));
+      final response = await chat.generateChatResponse();
+      final raw = _extractText(response);
+      final json = _extractJson(raw);
+      return StudyPack(
+        lang: lang,
+        summary: (json['summary'] as String?) ?? raw,
+        keyTerms: ((json['key_terms'] as List?) ?? const [])
+            .whereType<Map>()
+            .map((m) => KeyTerm(
+                  term: (m['term'] as String?) ?? '',
+                  definition: (m['definition'] as String?) ?? '',
+                ))
+            .toList(),
+        practiceQuestions: ((json['practice_questions'] as List?) ?? const [])
+            .whereType<String>()
+            .toList(),
+      );
+    });
   }
 
   /// Streaming variant: produces partial [StudyPack] snapshots as each
@@ -582,6 +672,18 @@ class GemmaService {
   /// emit contains the complete pack. Lets the UI animate the pack in
   /// section-by-section instead of staring at a spinner.
   Stream<StudyPack> generateStudyPackStream({
+    required String transcript,
+    String lang = 'en',
+    String languageName = 'English',
+  }) {
+    return _serializeStream(() => _generateStudyPackStreamInner(
+          transcript: transcript,
+          lang: lang,
+          languageName: languageName,
+        ));
+  }
+
+  Stream<StudyPack> _generateStudyPackStreamInner({
     required String transcript,
     String lang = 'en',
     String languageName = 'English',
@@ -690,6 +792,18 @@ class GemmaService {
   /// output, so the quiz screen can show question 1 while questions 2-5 are
   /// still decoding.
   Stream<QuizItem> generateQuizStream({
+    required String transcript,
+    String languageName = 'English',
+    int count = 5,
+  }) {
+    return _serializeStream(() => _generateQuizStreamInner(
+          transcript: transcript,
+          languageName: languageName,
+          count: count,
+        ));
+  }
+
+  Stream<QuizItem> _generateQuizStreamInner({
     required String transcript,
     String languageName = 'English',
     int count = 5,

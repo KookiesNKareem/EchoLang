@@ -130,27 +130,24 @@ class WhisperService {
   // Native-backend continuous-listening state.
   bool _wantListening = false;
   String _accumulated = '';
+  String _currentPartial = '';
   String _liveLocale = 'en_US';
   void Function(String)? _liveOnPartial;
+  Timer? _cycleTimer;
 
   Future<void> _startNativeSession() async {
+    _currentPartial = '';
     await _native.listen(
       onResult: (r) {
-        final text = r.recognizedWords;
+        // Always update the live partial — iOS may or may not fire a
+        // finalResult before auto-stopping, so we can't trust that flag to
+        // commit. Track the most recent guess on every callback and commit
+        // it whenever the session ends.
+        _currentPartial = r.recognizedWords;
         if (r.finalResult) {
-          // Lock this chunk into the accumulator; iOS will spin up the next
-          // session from a fresh recognizer state.
-          if (text.trim().isNotEmpty) {
-            _accumulated = _accumulated.isEmpty ? text : '$_accumulated $text';
-          }
-          _liveOnPartial?.call(_accumulated);
+          _commitPartial();
         } else {
-          // In-flight partial: show accumulated + current guess without
-          // committing it yet.
-          final preview = _accumulated.isEmpty
-              ? text
-              : (text.isEmpty ? _accumulated : '$_accumulated $text');
-          _liveOnPartial?.call(preview);
+          _liveOnPartial?.call(_previewText());
         }
       },
       localeId: _liveLocale,
@@ -163,15 +160,53 @@ class WhisperService {
         listenMode: stt.ListenMode.dictation,
       ),
     );
+    // Pre-emptive cycle: iOS Speech.framework will auto-stop at ~30 s wall
+    // clock regardless of what we set, so we manually rotate sessions at
+    // 25 s to ensure we own the transition. _commitPartial preserves words
+    // across the boundary; the new session resumes recognition immediately.
+    _cycleTimer?.cancel();
+    _cycleTimer = Timer(const Duration(seconds: 25), () async {
+      if (!_wantListening) return;
+      _commitPartial();
+      try {
+        if (_native.isListening) await _native.stop();
+      } catch (_) {}
+      if (_wantListening) {
+        try {
+          await _startNativeSession();
+        } catch (_) {}
+      }
+    });
+  }
+
+  void _commitPartial() {
+    final t = _currentPartial.trim();
+    _currentPartial = '';
+    if (t.isEmpty) return;
+    // Avoid double-counting if the same final fires twice (iOS sometimes
+    // emits both a final and a 'done' status with identical text).
+    if (_accumulated.endsWith(t)) return;
+    _accumulated = _accumulated.isEmpty ? t : '$_accumulated $t';
+    _liveOnPartial?.call(_accumulated);
+  }
+
+  String _previewText() {
+    final p = _currentPartial.trim();
+    if (_accumulated.isEmpty) return p;
+    if (p.isEmpty) return _accumulated;
+    return '$_accumulated $p';
   }
 
   void _onNativeStatusChanged(String status) {
     if (!_wantListening) return;
-    // 'notListening' / 'done' both indicate iOS stopped the session. Restart
-    // immediately so the user's continued speech isn't lost. A small delay
-    // gives the underlying recognizer a beat to release resources.
     if (status == 'notListening' || status == 'done') {
-      Future.delayed(const Duration(milliseconds: 150), () {
+      // Commit whatever the recognizer had before iOS yanked the session,
+      // then restart. The proactive cycle timer is the primary mechanism;
+      // this is the safety net for when iOS stops us early (silence, audio
+      // session interruption, etc.).
+      _commitPartial();
+      _cycleTimer?.cancel();
+      Future.delayed(const Duration(milliseconds: 120), () {
         if (_wantListening && _backend == SpeechBackend.native) {
           _startNativeSession().catchError((_) {});
         }
@@ -186,17 +221,16 @@ class WhisperService {
   Future<String> stopListening() async {
     if (_backend == SpeechBackend.native) {
       _wantListening = false;
+      _cycleTimer?.cancel();
       if (_native.isListening) await _native.stop();
-      // Splice any in-flight partial that hadn't yet been finalized.
-      final tail = _native.lastRecognizedWords.trim();
-      final combined = (_accumulated.isEmpty
-              ? tail
-              : (tail.isEmpty || _accumulated.endsWith(tail)
-                  ? _accumulated
-                  : '$_accumulated $tail'))
-          .trim();
+      // Commit whatever the recognizer still had buffered, then return the
+      // running accumulator. We can't trust the recognizer to fire one last
+      // finalResult on stop.
+      _commitPartial();
       _liveOnPartial = null;
+      final combined = _accumulated.trim();
       final text = _stripWhisperTokens(combined).trim();
+      _accumulated = '';
       if (text.isEmpty) {
         throw Exception(
             'No speech detected. Try recording closer to the speaker.');
@@ -239,13 +273,13 @@ class WhisperService {
   void unload() {
     _wantListening = false;
     _liveOnPartial = null;
+    _cycleTimer?.cancel();
     if (_native.isListening) _native.stop();
     _cactus?.unload();
     _cactus = null;
     _status = WhisperStatus.notReady;
-    // Clear the cached ready-future so the next ensureReady() actually
-    // re-runs _load(). Otherwise the stale-cached completed future returns
-    // immediately and startListening then throws "not ready".
+    _accumulated = '';
+    _currentPartial = '';
     _readyFuture = null;
   }
 
