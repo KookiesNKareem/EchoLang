@@ -18,6 +18,33 @@ class QAStarters {
   });
 }
 
+/// A grounded citation produced when Gemma 4 calls one of our tools while
+/// answering a question. Rendered in the UI as a chip under the answer so
+/// the user can see *which* transcript line backs the model's claim.
+class Citation {
+  final String toolName;
+  final Map<String, dynamic> args;
+  final Map<String, dynamic> result;
+  const Citation({required this.toolName, required this.args, required this.result});
+}
+
+/// Streamed event from [GemmaService.askWithToolsStream].
+sealed class AskEvent {
+  const AskEvent();
+}
+class AskText extends AskEvent {
+  final String token;
+  const AskText(this.token);
+}
+class AskCitation extends AskEvent {
+  final Citation citation;
+  const AskCitation(this.citation);
+}
+class AskThinking extends AskEvent {
+  final String content;
+  const AskThinking(this.content);
+}
+
 class GemmaBenchResult {
   final Duration firstTokenLatency;
   final Duration totalDuration;
@@ -129,6 +156,173 @@ class GemmaService {
     await _chat!.addQueryChunk(Message.text(text: preamble, isUser: true));
     await _chat!.generateChatResponse();
     _primedContextHash = hash;
+  }
+
+  /// Native Gemma 4 function-calling Q&A. Hands the model two tools it can
+  /// invoke mid-answer to ground itself in the lecture, then streams text
+  /// tokens and citation events to the caller. Each tool call surfaces as
+  /// an [AskCitation] event so the UI can render an inline chip — the
+  /// answer is verifiably backed by the transcript, not invented.
+  Stream<AskEvent> askWithToolsStream({
+    required List<TranscriptLine> transcript,
+    required List<KeyTerm> keyTerms,
+    required String question,
+  }) async* {
+    if (_status != GemmaStatus.ready || _model == null) {
+      throw StateError('Gemma not ready (status=$_status)');
+    }
+    final transcriptText = transcript.map((l) => l.text).join(' ');
+    final trimmed = _trimContext(transcriptText);
+    final tools = <Tool>[
+      const Tool(
+        name: 'quote_from_lecture',
+        description:
+            'Find an exact short quote from the lecture transcript that '
+            'supports an answer. Returns the quote and its timestamp. Use '
+            'this whenever you make a factual claim about the lecture.',
+        parameters: {
+          'type': 'object',
+          'properties': {
+            'query': {
+              'type': 'string',
+              'description': 'A few keywords describing the claim to support.',
+            },
+          },
+          'required': ['query'],
+        },
+      ),
+      const Tool(
+        name: 'look_up_term',
+        description:
+            'Look up the definition of a key term as it was used in the '
+            'lecture. Returns the term and its one-sentence definition.',
+        parameters: {
+          'type': 'object',
+          'properties': {
+            'term': {
+              'type': 'string',
+              'description': 'The term to look up.',
+            },
+          },
+          'required': ['term'],
+        },
+      ),
+    ];
+    final chat = await _model!.createChat(
+      tools: tools,
+      supportsFunctionCalls: true,
+      modelType: ModelType.gemma4,
+      isThinking: true,
+    );
+    final preamble =
+        'You are a tutor helping a student review a lecture they attended. '
+        'You have two tools you SHOULD use to ground every factual claim: '
+        'quote_from_lecture for direct evidence, look_up_term for term '
+        'definitions. After calling tools as needed, write a short, '
+        'natural-language answer.\n\n'
+        'If the question is not answerable from the lecture transcript, '
+        'start your reply with the literal token [OFF-TOPIC] (in brackets) '
+        'and then explain in one sentence what the lecture actually covers. '
+        'Do not invent answers. Do not pretend the lecture covered something '
+        'it did not.\n\n'
+        '--- LECTURE TRANSCRIPT ---\n$trimmed\n--- END ---';
+    await chat.addQueryChunk(Message.text(text: preamble, isUser: true));
+    await chat.addQueryChunk(Message.text(text: question, isUser: true));
+
+    var sawCalls = true;
+    while (sawCalls) {
+      sawCalls = false;
+      await for (final chunk in chat.generateChatResponseAsync()) {
+        switch (chunk) {
+          case TextResponse(:final token):
+            yield AskText(token);
+          case ThinkingResponse(:final content):
+            yield AskThinking(content);
+          case FunctionCallResponse(:final name, :final args):
+            sawCalls = true;
+            final result = _dispatchTool(name, args, transcript, keyTerms);
+            yield AskCitation(Citation(toolName: name, args: args, result: result));
+            await chat.addQueryChunk(
+              Message.toolResponse(toolName: name, response: result),
+            );
+          case ParallelFunctionCallResponse(:final calls):
+            sawCalls = true;
+            for (final c in calls) {
+              final result = _dispatchTool(c.name, c.args, transcript, keyTerms);
+              yield AskCitation(
+                Citation(toolName: c.name, args: c.args, result: result),
+              );
+              await chat.addQueryChunk(
+                Message.toolResponse(toolName: c.name, response: result),
+              );
+            }
+        }
+      }
+    }
+  }
+
+  /// Pure-Dart tool dispatch: lecture transcript + study-pack key terms are
+  /// the entire grounding surface. No network, no external lookups — every
+  /// citation traces back to in-memory state the user can verify.
+  Map<String, dynamic> _dispatchTool(
+    String name,
+    Map<String, dynamic> args,
+    List<TranscriptLine> transcript,
+    List<KeyTerm> keyTerms,
+  ) {
+    switch (name) {
+      case 'quote_from_lecture':
+        final query = (args['query'] as String? ?? '').toLowerCase().trim();
+        if (query.isEmpty) {
+          return {'found': false};
+        }
+        final terms = query.split(RegExp(r'\s+'))
+            .where((t) => t.length > 2)
+            .toList();
+        TranscriptLine? best;
+        int bestScore = 0;
+        for (final l in transcript) {
+          final hay = l.text.toLowerCase();
+          var score = 0;
+          for (final t in terms) {
+            if (hay.contains(t)) score++;
+          }
+          if (score > bestScore) {
+            bestScore = score;
+            best = l;
+          }
+        }
+        if (best == null || bestScore == 0) return {'found': false};
+        return {
+          'found': true,
+          'quote': best.text,
+          'timestamp': best.timestamp,
+        };
+      case 'look_up_term':
+        final wanted = (args['term'] as String? ?? '').toLowerCase().trim();
+        for (final kt in keyTerms) {
+          if (kt.term.toLowerCase() == wanted) {
+            return {
+              'found': true,
+              'term': kt.term,
+              'definition': kt.definition,
+            };
+          }
+        }
+        for (final kt in keyTerms) {
+          if (kt.term.toLowerCase().contains(wanted) ||
+              wanted.contains(kt.term.toLowerCase())) {
+            return {
+              'found': true,
+              'term': kt.term,
+              'definition': kt.definition,
+            };
+          }
+        }
+        return {'found': false, 'term': args['term']};
+      default:
+        return {'error': 'unknown tool: $name'};
+    }
   }
 
   /// Ask a question and stream the answer token-by-token. The first call for
@@ -311,11 +505,15 @@ class GemmaService {
     }
   }
 
-  Future<StudyPack> generateStudyPack({required String transcript, String lang = 'en'}) async {
+  Future<StudyPack> generateStudyPack({
+    required String transcript,
+    String lang = 'en',
+    String languageName = 'English',
+  }) async {
     if (_status != GemmaStatus.ready || _model == null) {
       throw StateError('Gemma not ready (status=$_status)');
     }
-    final prompt = _studyPackPrompt(_trimContext(transcript));
+    final prompt = _studyPackPrompt(_trimContext(transcript), languageName);
     final chat = await _model!.createChat();
     await chat.addQueryChunk(Message.text(text: prompt, isUser: true));
     final response = await chat.generateChatResponse();
@@ -336,6 +534,114 @@ class GemmaService {
           .toList(),
     );
   }
+
+  /// Streaming variant: produces partial [StudyPack] snapshots as each
+  /// section (summary → key terms → practice questions) lands. The final
+  /// emit contains the complete pack. Lets the UI animate the pack in
+  /// section-by-section instead of staring at a spinner.
+  Stream<StudyPack> generateStudyPackStream({
+    required String transcript,
+    String lang = 'en',
+    String languageName = 'English',
+  }) async* {
+    if (_status != GemmaStatus.ready || _model == null) {
+      throw StateError('Gemma not ready (status=$_status)');
+    }
+    final prompt = _studyPackPrompt(_trimContext(transcript), languageName);
+    final chat = await _model!.createChat();
+    await chat.addQueryChunk(Message.text(text: prompt, isUser: true));
+    final buf = StringBuffer();
+    StudyPack lastEmitted = StudyPack(
+      lang: lang, summary: '', keyTerms: const [], practiceQuestions: const [],
+    );
+    await for (final chunk in chat.generateChatResponseAsync()) {
+      switch (chunk) {
+        case TextResponse(:final token):
+          buf.write(token);
+        case ThinkingResponse(:final content):
+          buf.write(content);
+        default:
+          break;
+      }
+      final partial = _parsePartialStudyPack(buf.toString(), lang);
+      if (partial != null && _packDiffers(partial, lastEmitted)) {
+        lastEmitted = partial;
+        yield partial;
+      }
+    }
+    final finalJson = _extractJson(buf.toString());
+    final finalPack = StudyPack(
+      lang: lang,
+      summary: (finalJson['summary'] as String?) ?? lastEmitted.summary,
+      keyTerms: ((finalJson['key_terms'] as List?) ?? const [])
+          .whereType<Map>()
+          .map((m) => KeyTerm(
+                term: (m['term'] as String?) ?? '',
+                definition: (m['definition'] as String?) ?? '',
+              ))
+          .toList(),
+      practiceQuestions: ((finalJson['practice_questions'] as List?) ?? const [])
+          .whereType<String>()
+          .toList(),
+    );
+    yield finalPack;
+  }
+
+  /// Pull whatever can be parsed out of an in-progress JSON blob. The model
+  /// emits the summary, key_terms, and practice_questions in order; if a
+  /// section's array isn't closed yet we treat what's there as partial and
+  /// strip any trailing incomplete object.
+  StudyPack? _parsePartialStudyPack(String raw, String lang) {
+    final start = raw.indexOf('{');
+    if (start < 0) return null;
+    final s = raw.substring(start);
+    String? summary;
+    final summaryMatch = RegExp(r'"summary"\s*:\s*"((?:[^"\\]|\\.)*)"')
+        .firstMatch(s);
+    if (summaryMatch != null) summary = _unescape(summaryMatch.group(1)!);
+
+    final keyTerms = <KeyTerm>[];
+    final ktArrMatch = RegExp(r'"key_terms"\s*:\s*\[').firstMatch(s);
+    if (ktArrMatch != null) {
+      final after = s.substring(ktArrMatch.end);
+      final ktObj = RegExp(
+        r'\{\s*"term"\s*:\s*"((?:[^"\\]|\\.)*)"\s*,\s*"definition"\s*:\s*"((?:[^"\\]|\\.)*)"\s*\}',
+      );
+      for (final m in ktObj.allMatches(after)) {
+        keyTerms.add(KeyTerm(
+          term: _unescape(m.group(1)!),
+          definition: _unescape(m.group(2)!),
+        ));
+      }
+    }
+
+    final pq = <String>[];
+    final pqArrMatch = RegExp(r'"practice_questions"\s*:\s*\[').firstMatch(s);
+    if (pqArrMatch != null) {
+      final after = s.substring(pqArrMatch.end);
+      for (final m in RegExp(r'"((?:[^"\\]|\\.)*)"').allMatches(after)) {
+        pq.add(_unescape(m.group(1)!));
+      }
+    }
+
+    if (summary == null && keyTerms.isEmpty && pq.isEmpty) return null;
+    return StudyPack(
+      lang: lang,
+      summary: summary ?? '',
+      keyTerms: keyTerms,
+      practiceQuestions: pq,
+    );
+  }
+
+  String _unescape(String s) => s
+      .replaceAll(r'\"', '"')
+      .replaceAll(r'\n', '\n')
+      .replaceAll(r'\\', r'\');
+
+  bool _packDiffers(StudyPack a, StudyPack b) =>
+      a.summary != b.summary ||
+      a.keyTerms.length != b.keyTerms.length ||
+      a.practiceQuestions.length != b.practiceQuestions.length;
 
   void unload() {
     _chat = null;
@@ -360,9 +666,10 @@ class GemmaService {
     return response.toString().trim();
   }
 
-  String _studyPackPrompt(String transcript) => '''
+  String _studyPackPrompt(String transcript, String languageName) => '''
 You are an academic tutor. Below is a transcript of a recorded lecture.
-Produce a study pack with three sections, in JSON.
+Produce a study pack with three sections, in JSON. All string values must
+be written in $languageName.
 
 Transcript:
 """
@@ -381,7 +688,9 @@ Respond with strict JSON in this exact shape (no commentary, no code fence):
   ]
 }
 
-Use 5-10 key_terms and 5-8 practice_questions.
+Use 5-8 key_terms and 5-6 practice_questions. Emit sections in this exact
+order so the UI can render partial output: summary first, then key_terms,
+then practice_questions.
 
 JSON:
 ''';

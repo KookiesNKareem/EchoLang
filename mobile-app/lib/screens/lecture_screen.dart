@@ -30,6 +30,8 @@ class _LectureScreenState extends State<LectureScreen> {
   String _streamingText = '';
   String? _translatingTo;
   bool _cancelTranslation = false;
+  bool _packStreaming = false;
+  StudyPack? _partialPack;
 
   @override
   void initState() {
@@ -41,6 +43,50 @@ class _LectureScreenState extends State<LectureScreen> {
     setState(() {
       _future = widget.store.load(Directory(widget.dirPath))..then(_prewarm);
     });
+  }
+
+  /// Stream a fresh study pack into the Study Pack tab in [langName],
+  /// section-by-section, then persist it. Driven from the translate flow
+  /// so a successful translation also yields a localized study pack.
+  Future<void> _regenStudyPack(
+    Lecture lecture,
+    String langCode,
+    String langName,
+  ) async {
+    if (widget.gemma.status != GemmaStatus.ready) return;
+    setState(() {
+      _packStreaming = true;
+      _partialPack = StudyPack(
+        lang: langCode, summary: '', keyTerms: const [], practiceQuestions: const [],
+      );
+    });
+    final ctx = lecture.transcript.map((l) => l.text).join(' ');
+    try {
+      StudyPack? last;
+      await for (final p in widget.gemma.generateStudyPackStream(
+        transcript: ctx, lang: langCode, languageName: langName,
+      )) {
+        if (!mounted) return;
+        last = p;
+        setState(() => _partialPack = p);
+      }
+      if (last != null) {
+        await widget.store.saveStudyPack(
+          dir: Directory(widget.dirPath),
+          pack: last,
+        );
+      }
+    } catch (_) {
+      // Silent: the translate snackbar already fired; partial pack stays
+      // visible so the user can still see what landed.
+    } finally {
+      if (mounted) {
+        setState(() {
+          _packStreaming = false;
+        });
+        _reload();
+      }
+    }
   }
 
   void _prewarm(Lecture lecture) {
@@ -119,6 +165,7 @@ class _LectureScreenState extends State<LectureScreen> {
         _translatingTo = null;
       });
       _reload();
+      unawaited(_regenStudyPack(lecture, targetCode, targetName));
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text('Translated to $targetName')),
       );
@@ -151,8 +198,9 @@ class _LectureScreenState extends State<LectureScreen> {
         }
         final lecture = snap.data!;
         final hasPack = lecture.studyPack != null;
+        final showPackTab = hasPack || _packStreaming;
         final tabs = <_TabSpec>[
-          if (hasPack) const _TabSpec('Study pack', Icons.auto_stories_rounded),
+          if (showPackTab) const _TabSpec('Study pack', Icons.auto_stories_rounded),
           const _TabSpec('Translation', Icons.translate_rounded),
           const _TabSpec('Original', Icons.subject_rounded),
         ];
@@ -178,7 +226,11 @@ class _LectureScreenState extends State<LectureScreen> {
                 children: tabs.map((t) {
                   switch (t.label) {
                     case 'Study pack':
-                      return _StudyPackTab(lecture: lecture);
+                      return _StudyPackTab(
+                        lecture: lecture,
+                        streaming: _packStreaming,
+                        streamingPack: _partialPack,
+                      );
                     case 'Translation':
                       return _TranslationTab(
                         lecture: lecture,
@@ -369,14 +421,21 @@ class _TabBarDelegate extends SliverPersistentHeaderDelegate {
 
 class _StudyPackTab extends StatelessWidget {
   final Lecture lecture;
-  const _StudyPackTab({required this.lecture});
+  final bool streaming;
+  final StudyPack? streamingPack;
+  const _StudyPackTab({
+    required this.lecture,
+    this.streaming = false,
+    this.streamingPack,
+  });
 
   @override
   Widget build(BuildContext context) {
-    final pack = lecture.studyPack;
+    final pack = streaming ? streamingPack : lecture.studyPack;
     if (pack == null) {
       return const Center(child: Text('No study pack in this bundle.'));
     }
+    final cs = Theme.of(context).colorScheme;
     final isRtl = rtlLangs.contains(lecture.manifest.lang);
     final dir = isRtl ? TextDirection.rtl : TextDirection.ltr;
     final align = isRtl ? CrossAxisAlignment.end : CrossAxisAlignment.start;
@@ -384,6 +443,28 @@ class _StudyPackTab extends StatelessWidget {
     return ListView(
       padding: const EdgeInsets.fromLTRB(20, 20, 20, 100),
       children: [
+        if (streaming)
+          Padding(
+            padding: const EdgeInsets.only(bottom: 16),
+            child: Row(
+              children: [
+                SizedBox(
+                  width: 14, height: 14,
+                  child: CircularProgressIndicator(
+                    strokeWidth: 2, color: cs.primary,
+                  ),
+                ),
+                const SizedBox(width: 10),
+                Text(
+                  'Generating study pack…',
+                  style: TextStyle(
+                    fontSize: 13,
+                    color: Colors.white.withValues(alpha: 0.65),
+                  ),
+                ),
+              ],
+            ),
+          ),
         _SectionHeader(icon: Icons.auto_stories_rounded, label: 'Summary'),
         const SizedBox(height: 10),
         Container(

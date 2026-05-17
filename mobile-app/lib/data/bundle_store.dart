@@ -155,6 +155,22 @@ class BundleStore {
     await manifestFile.writeAsString(const JsonEncoder.withIndent('  ').convert(raw));
   }
 
+  Future<void> saveStudyPack({
+    required Directory dir,
+    required StudyPack pack,
+  }) async {
+    await File('${dir.path}/study_pack.json').writeAsString(
+      const JsonEncoder.withIndent('  ').convert({
+        'lang': pack.lang,
+        'summary': pack.summary,
+        'key_terms': pack.keyTerms
+            .map((kt) => {'term': kt.term, 'definition': kt.definition})
+            .toList(),
+        'practice_questions': pack.practiceQuestions,
+      }),
+    );
+  }
+
   Future<LectureRef> saveLocal({
     required String classId,
     required String title,
