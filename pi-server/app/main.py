@@ -12,6 +12,9 @@ Endpoints (v1):
   GET  /api/stream/{class_id}/{lang}     - SSE stream of translated captions for a language
   POST /api/class/{id}/confusion         - body: {student_id, caption_index}
 
+  HEAD /api/model/gemma             - phone-side Gemma LiteRT bundle metadata (size)
+  GET  /api/model/gemma             - phone-side Gemma LiteRT bundle (Range supported)
+
   GET  /api/health                  - health check
 """
 from __future__ import annotations
@@ -130,7 +133,48 @@ def health():
         "ok": True,
         "active_class": active.id if active else None,
         "supported_languages": settings.supported_languages,
+        "has_phone_model": _gemma_litertlm_path().is_file(),
     }
+
+
+# ---- Phone-side model serving ---------------------------------------------------
+# Lets the mobile app pull Gemma 4 E2B (LiteRT, MTP) from the Pi over LAN
+# instead of Hugging Face. The Pi only needs to download the 2.6 GB bundle
+# once; phones then grab it at WiFi speeds, no public internet required.
+# Starlette's FileResponse honors Range requests automatically, so flaky
+# connections resume from a .part file cleanly.
+
+
+def _gemma_litertlm_path() -> Path:
+    return settings.models_dir / settings.gemma_litertlm
+
+
+@app.head("/api/model/gemma")
+def head_gemma_model():
+    p = _gemma_litertlm_path()
+    if not p.is_file():
+        raise HTTPException(404, "Phone-side Gemma bundle not present on this Pi")
+    return Response(
+        status_code=200,
+        headers={
+            "content-length": str(p.stat().st_size),
+            "content-type": "application/octet-stream",
+            "accept-ranges": "bytes",
+        },
+    )
+
+
+@app.get("/api/model/gemma")
+def get_gemma_model():
+    p = _gemma_litertlm_path()
+    if not p.is_file():
+        raise HTTPException(404, "Phone-side Gemma bundle not present on this Pi")
+    return FileResponse(
+        p,
+        media_type="application/octet-stream",
+        filename=p.name,
+        headers={"accept-ranges": "bytes"},
+    )
 
 
 # ---- Class lifecycle ------------------------------------------------------------

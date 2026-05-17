@@ -45,6 +45,13 @@ class Settings(BaseSettings):
     gemma_ctx: int = 4096
     gemma_threads: int = 4
 
+    # Phone-side Gemma 4 E2B LiteRT bundle (MTP-enabled). Lives under
+    # models_dir and is served to the mobile app over LAN so students don't
+    # have to pull ~2.6 GB from Hugging Face on bad classroom internet. If
+    # the file is missing, /api/model/gemma returns 404 and the app falls
+    # back to its public HF URL.
+    gemma_litertlm: str = "gemma-4-E2B-it.litertlm"
+
     sample_rate: int = 16000
     channels: int = 1
 
