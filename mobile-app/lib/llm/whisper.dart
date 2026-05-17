@@ -107,6 +107,7 @@ class WhisperService {
     if (_backend == SpeechBackend.native) {
       _wantListening = true;
       _accumulated = '';
+      _sessionStarted = '';
       _liveLocale = localeId;
       _liveOnPartial = onPartial;
       _lastErrorMessage = null;
@@ -125,13 +126,19 @@ class WhisperService {
   bool _wantListening = false;
   String _accumulated = '';
   String _currentPartial = '';
+  /// Running cumulative text we've already credited to [_accumulated] for the
+  /// active session. iOS Speech delivers cumulative results, so we diff each
+  /// new commit against this to avoid re-appending what we already added.
+  String _sessionStarted = '';
   String _liveLocale = 'en_US';
   void Function(String)? _liveOnPartial;
   Timer? _cycleTimer;
   String? _lastErrorMessage;
   int _restartAttempts = 0;
-  /// Prevents concurrent _cycleNativeSession invocations that cause double-counting.
   bool _cycling = false;
+  /// Drops onResult callbacks during a cycle transition, so a late final from
+  /// the prior session can't write its full text into the new session's state.
+  bool _acceptingResults = true;
   static const _maxConsecutiveRestartFailures = 5;
 
   /// Latest non-permanent STT error message, surfaced in the recording UI so
@@ -143,7 +150,7 @@ class WhisperService {
     _currentPartial = '';
     await _native.listen(
       onResult: (r) {
-        // Update live partial on every callback; finalResult is unreliable on iOS.
+        if (!_acceptingResults) return;
         _currentPartial = r.recognizedWords;
         if (r.finalResult) {
           _commitPartial();
@@ -161,19 +168,30 @@ class WhisperService {
         listenMode: stt.ListenMode.dictation,
       ),
     );
-    // iOS auto-stops at ~30s, so cycle at 25s to own the transition.
+    _acceptingResults = true;
     _restartAttempts = 0;
     _cycleTimer?.cancel();
-    _cycleTimer = Timer(const Duration(seconds: 25), () => _cycleNativeSession());
+    _cycleTimer = Timer(const Duration(seconds: 20), () => _cycleNativeSession());
   }
 
   void _commitPartial() {
     final t = _currentPartial.trim();
     _currentPartial = '';
     if (t.isEmpty) return;
-    // iOS may emit final + done with identical text; avoid duplication.
-    if (_accumulated.endsWith(t)) return;
-    _accumulated = _accumulated.isEmpty ? t : '$_accumulated $t';
+    String toAppend;
+    if (_sessionStarted.isNotEmpty && t.startsWith(_sessionStarted)) {
+      toAppend = t.substring(_sessionStarted.length).trim();
+      if (toAppend.isEmpty) return;
+      _sessionStarted = t;
+    } else if (_sessionStarted.isNotEmpty && _sessionStarted.startsWith(t)) {
+      return;
+    } else if (_accumulated.endsWith(t)) {
+      return;
+    } else {
+      toAppend = t;
+      _sessionStarted = t;
+    }
+    _accumulated = _accumulated.isEmpty ? toAppend : '$_accumulated $toAppend';
     _liveOnPartial?.call(_accumulated);
   }
 
@@ -181,6 +199,11 @@ class WhisperService {
     final p = _currentPartial.trim();
     if (_accumulated.isEmpty) return p;
     if (p.isEmpty) return _accumulated;
+    if (_sessionStarted.isNotEmpty && p.startsWith(_sessionStarted)) {
+      final tail = p.substring(_sessionStarted.length).trim();
+      if (tail.isEmpty) return _accumulated;
+      return '$_accumulated $tail';
+    }
     return '$_accumulated $p';
   }
 
@@ -188,16 +211,17 @@ class WhisperService {
   Future<void> _cycleNativeSession() async {
     if (_cycling || !_wantListening) return;
     _cycling = true;
+    _acceptingResults = false;
     try {
       _commitPartial();
       try {
         if (_native.isListening) await _native.stop();
       } catch (_) {}
-      // Brief beat for iOS to fully release the audio session before we
-      // ask for it back. Without this, listen() sometimes throws on rapid
-      // cycle.
-      await Future.delayed(const Duration(milliseconds: 250));
+      // Drain pending callbacks — iOS often delivers a cumulative final
+      // result after stop(), which the gate above will now ignore.
+      await Future.delayed(const Duration(milliseconds: 450));
       if (!_wantListening) return;
+      _sessionStarted = '';
       try {
         await _startNativeSession();
       } catch (e) {
@@ -254,6 +278,7 @@ class WhisperService {
       final combined = _accumulated.trim();
       final text = _stripWhisperTokens(combined).trim();
       _accumulated = '';
+      _sessionStarted = '';
       if (text.isEmpty) {
         throw Exception(
             'No speech detected. Try recording closer to the speaker.');
@@ -303,6 +328,7 @@ class WhisperService {
     _status = WhisperStatus.notReady;
     _accumulated = '';
     _currentPartial = '';
+    _sessionStarted = '';
     _readyFuture = null;
   }
 
