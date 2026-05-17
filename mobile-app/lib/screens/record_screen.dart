@@ -204,7 +204,6 @@ class _RecordScreenState extends State<RecordScreen> with SingleTickerProviderSt
                   _Phase.recording => _RecordingView(
                       elapsed: _elapsed,
                       fmt: _fmt,
-                      pulse: _pulse,
                       livePartial: widget.whisper.supportsLiveCaptions ? _livePartial : null,
                       backendLabel: widget.whisper.hasNativeBackend
                           ? 'iOS Speech · on-device'
@@ -271,13 +270,11 @@ class _IdleHint extends StatelessWidget {
 class _RecordingView extends StatelessWidget {
   final Duration elapsed;
   final String Function(Duration) fmt;
-  final AnimationController pulse;
   final String? livePartial;
   final String backendLabel;
   const _RecordingView({
     required this.elapsed,
     required this.fmt,
-    required this.pulse,
     required this.backendLabel,
     this.livePartial,
   });
@@ -297,30 +294,12 @@ class _RecordingView extends StatelessWidget {
         // Compact pulse header — keeps the mic visible without dominating.
         Row(
           children: [
-            AnimatedBuilder(
-              animation: pulse,
-              builder: (_, __) {
-                final t = pulse.value;
-                return Stack(
-                  alignment: Alignment.center,
-                  children: [
-                    Container(
-                      width: 60 + 16 * t, height: 60 + 16 * t,
-                      decoration: BoxDecoration(
-                        shape: BoxShape.circle,
-                        color: const Color(0xFFE53935).withValues(alpha: 0.18 * (1 - t)),
-                      ),
-                    ),
-                    Container(
-                      width: 56, height: 56,
-                      decoration: const BoxDecoration(
-                        color: Color(0xFFE53935), shape: BoxShape.circle,
-                      ),
-                      child: const Icon(Icons.mic_rounded, size: 26, color: Colors.white),
-                    ),
-                  ],
-                );
-              },
+            Container(
+              width: 56, height: 56,
+              decoration: const BoxDecoration(
+                color: Color(0xFFE53935), shape: BoxShape.circle,
+              ),
+              child: const Icon(Icons.mic_rounded, size: 26, color: Colors.white),
             ),
             const SizedBox(width: 16),
             Expanded(
