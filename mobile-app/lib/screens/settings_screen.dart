@@ -212,6 +212,41 @@ class _SettingsScreenState extends State<SettingsScreen> {
                   ),
                 ),
                 const SizedBox(height: 24),
+                _section('Privacy'),
+                _card(
+                  child: Padding(
+                    padding: const EdgeInsets.all(4),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Row(
+                          children: [
+                            Icon(Icons.lock_outline_rounded, color: cs.primary, size: 20),
+                            const SizedBox(width: 10),
+                            const Expanded(
+                              child: Text(
+                                'Everything stays on this device',
+                                style: TextStyle(
+                                    fontSize: 15, fontWeight: FontWeight.w600),
+                              ),
+                            ),
+                          ],
+                        ),
+                        const SizedBox(height: 10),
+                        Text(
+                          'Audio, transcripts, translations, and Q&A never leave your phone. '
+                          'No cloud, no accounts, no analytics — Gemma 4 runs locally for every answer.',
+                          style: TextStyle(
+                            fontSize: 13,
+                            height: 1.45,
+                            color: Colors.white.withValues(alpha: 0.72),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+                const SizedBox(height: 24),
                 _section('Storage on this phone'),
                 _card(
                   child: Column(
