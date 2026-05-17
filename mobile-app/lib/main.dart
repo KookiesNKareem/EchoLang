@@ -47,7 +47,7 @@ class _LocalLearningAppState extends State<LocalLearningApp> {
   @override
   Widget build(BuildContext context) {
     return MaterialApp.router(
-      title: 'LocalLearning',
+      title: 'EchoLang',
       debugShowCheckedModeBanner: false,
       theme: buildTheme(),
       routerConfig: buildRouter(store: _store, gemma: _gemma, whisper: _whisper),

@@ -1,10 +1,12 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:go_router/go_router.dart';
 
 import '../data/bundle_store.dart';
 import '../data/models.dart';
 import '../llm/gemma.dart';
 import '../llm/whisper.dart';
+import 'model_info_sheet.dart';
 
 class LecturesScreen extends StatefulWidget {
   final BundleStore store;
@@ -29,6 +31,9 @@ class _LecturesScreenState extends State<LecturesScreen> {
   String? _gemmaMessage;
   double? _whisperProgress;
   String? _whisperMessage;
+
+  // SpeedDial — main FAB expands to Record / Join classroom.
+  bool _fabOpen = false;
 
   @override
   void initState() {
@@ -71,12 +76,144 @@ class _LecturesScreenState extends State<LecturesScreen> {
       widget.gemma.status != GemmaStatus.ready ||
       widget.whisper.status != WhisperStatus.ready;
 
+  Future<void> _showCardMenu(LectureRef ref) async {
+    HapticFeedback.mediumImpact();
+    final action = await showModalBottomSheet<String>(
+      context: context,
+      backgroundColor: const Color(0xFF1A1A1F),
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+      ),
+      builder: (sheetCtx) => _LectureActionSheet(title: ref.manifest.title),
+    );
+    if (!mounted || action == null) return;
+    switch (action) {
+      case 'rename':
+        await _renameLecture(ref);
+        break;
+      case 'translate':
+        // Defer to the lecture viewer's existing flow — push and let the
+        // user open the language picker there.
+        await context.push('/lecture/${Uri.encodeComponent(ref.dir.path)}');
+        _refresh();
+        break;
+      case 'delete':
+        await _deleteLecture(ref);
+        break;
+    }
+  }
+
+  Future<void> _renameLecture(LectureRef ref) async {
+    final ctrl = TextEditingController(text: ref.manifest.title);
+    final next = await showDialog<String>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Rename lecture'),
+        content: TextField(
+          controller: ctrl,
+          autofocus: true,
+          decoration: const InputDecoration(labelText: 'Title'),
+          onSubmitted: (v) => Navigator.of(ctx).pop(v),
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.of(ctx).pop(), child: const Text('Cancel')),
+          FilledButton(
+            onPressed: () => Navigator.of(ctx).pop(ctrl.text),
+            child: const Text('Save'),
+          ),
+        ],
+      ),
+    );
+    if (next == null || next.trim().isEmpty || next.trim() == ref.manifest.title) return;
+    try {
+      await widget.store.renameLecture(dir: ref.dir, title: next.trim());
+      _refresh();
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Rename failed: $e')),
+      );
+    }
+  }
+
+  Future<void> _deleteLecture(LectureRef ref) async {
+    final confirm = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Delete this lecture?'),
+        content: Text(
+          '"${ref.manifest.title}" will be removed from this phone.',
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.of(ctx).pop(false), child: const Text('Cancel')),
+          FilledButton(
+            style: FilledButton.styleFrom(
+              backgroundColor: const Color(0xFFE53935),
+            ),
+            onPressed: () => Navigator.of(ctx).pop(true),
+            child: const Text('Delete'),
+          ),
+        ],
+      ),
+    );
+    if (confirm != true) return;
+    try {
+      await widget.store.delete(ref.dir);
+      _refresh();
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Delete failed: $e')),
+      );
+    }
+  }
+
+  Future<void> _openRecord() async {
+    setState(() => _fabOpen = false);
+    HapticFeedback.mediumImpact();
+    await context.push('/record');
+    _refresh();
+  }
+
+  Future<void> _openConnect() async {
+    setState(() => _fabOpen = false);
+    HapticFeedback.selectionClick();
+    await context.push('/connect');
+    _refresh();
+  }
+
   @override
   Widget build(BuildContext context) {
     final cs = Theme.of(context).colorScheme;
     return Scaffold(
-      body: SafeArea(
-        child: FutureBuilder<List<LectureRef>>(
+      body: Stack(
+        children: [
+          SafeArea(
+            child: _buildBody(),
+          ),
+          // Tap-anywhere-to-close scrim. Sits between the content and the
+          // FAB so the SpeedDial actions stay tappable while everything
+          // else dims and absorbs touches.
+          IgnorePointer(
+            ignoring: !_fabOpen,
+            child: AnimatedOpacity(
+              opacity: _fabOpen ? 1 : 0,
+              duration: const Duration(milliseconds: 180),
+              child: GestureDetector(
+                behavior: HitTestBehavior.opaque,
+                onTap: () => setState(() => _fabOpen = false),
+                child: Container(color: Colors.black.withValues(alpha: 0.45)),
+              ),
+            ),
+          ),
+        ],
+      ),
+      floatingActionButton: _buildSpeedDial(cs),
+    );
+  }
+
+  Widget _buildBody() {
+    return FutureBuilder<List<LectureRef>>(
           future: _future,
           builder: (context, snap) {
             if (snap.connectionState != ConnectionState.done) {
@@ -91,9 +228,23 @@ class _LecturesScreenState extends State<LecturesScreen> {
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
-                        Text(
-                          'LocalLearning',
-                          style: Theme.of(context).textTheme.headlineMedium,
+                        Row(
+                          crossAxisAlignment: CrossAxisAlignment.center,
+                          children: [
+                            Expanded(
+                              child: Text(
+                                'EchoLang',
+                                style: Theme.of(context).textTheme.headlineMedium,
+                              ),
+                            ),
+                            const _PrivacyChip(),
+                            const SizedBox(width: 6),
+                            IconButton(
+                              tooltip: 'Settings',
+                              icon: const Icon(Icons.settings_outlined),
+                              onPressed: () => context.push('/settings'),
+                            ),
+                          ],
                         ),
                         const SizedBox(height: 4),
                         Text(
@@ -132,52 +283,183 @@ class _LecturesScreenState extends State<LecturesScreen> {
                       separatorBuilder: (_, _) => const SizedBox(height: 12),
                       itemBuilder: (_, i) => _LectureCard(
                         ref: lectures[i],
-                        onTap: () => context.push('/lecture/${Uri.encodeComponent(lectures[i].dir.path)}'),
+                        onTap: () async {
+                          await context.push('/lecture/${Uri.encodeComponent(lectures[i].dir.path)}');
+                          // Re-translate moves the bundle to a new lang-suffixed
+                          // dir, so the list needs to re-scan after viewing.
+                          _refresh();
+                        },
+                        onLongPress: () => _showCardMenu(lectures[i]),
                       ),
                     ),
                   ),
               ],
             );
           },
-        ),
+        );
+  }
+
+  Widget _buildSpeedDial(ColorScheme cs) {
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 8),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.end,
+        children: [
+          _SpeedDialAction(
+            visible: _fabOpen,
+            icon: Icons.wifi_rounded,
+            label: 'Join classroom',
+            heroTag: 'connect',
+            backgroundColor: cs.surfaceContainerHighest,
+            foregroundColor: cs.onSurface,
+            onPressed: _openConnect,
+          ),
+          const SizedBox(height: 12),
+          _SpeedDialAction(
+            visible: _fabOpen,
+            icon: Icons.mic_rounded,
+            label: 'Record now',
+            heroTag: 'record',
+            backgroundColor: cs.primary,
+            foregroundColor: cs.onPrimary,
+            onPressed: _openRecord,
+          ),
+          const SizedBox(height: 12),
+          FloatingActionButton(
+            heroTag: 'speeddial',
+            onPressed: () {
+              HapticFeedback.lightImpact();
+              setState(() => _fabOpen = !_fabOpen);
+            },
+            backgroundColor: cs.primary,
+            foregroundColor: cs.onPrimary,
+            tooltip: _fabOpen ? 'Close' : 'New lecture',
+            child: AnimatedSwitcher(
+              duration: const Duration(milliseconds: 180),
+              transitionBuilder: (child, anim) => RotationTransition(
+                turns: Tween<double>(begin: 0.6, end: 1.0).animate(anim),
+                child: ScaleTransition(scale: anim, child: child),
+              ),
+              child: Icon(
+                _fabOpen ? Icons.close_rounded : Icons.add_rounded,
+                key: ValueKey(_fabOpen),
+              ),
+            ),
+          ),
+        ],
       ),
-      floatingActionButton: Padding(
-        padding: const EdgeInsets.only(bottom: 8),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.end,
-          children: [
-            FloatingActionButton.extended(
-              heroTag: 'connect',
-              onPressed: () async {
-                await context.push('/connect');
-                _refresh();
-              },
-              icon: const Icon(Icons.wifi_rounded),
-              label: const Text('Join classroom'),
-              backgroundColor: cs.surfaceContainerHighest,
-              foregroundColor: cs.onSurface,
-            ),
-            const SizedBox(height: 12),
-            FloatingActionButton.extended(
-              heroTag: 'record',
-              onPressed: () async {
-                await context.push('/record');
-                _refresh();
-              },
-              icon: const Icon(Icons.mic_rounded),
-              label: const Text('Record now'),
-              backgroundColor: cs.primary,
-              foregroundColor: cs.onPrimary,
-            ),
-          ],
+    );
+  }
+}
+
+/// A single SpeedDial menu entry. Slides up and fades in when [visible],
+/// becomes untappable when hidden so it doesn't catch stray touches behind
+/// the closed FAB.
+class _SpeedDialAction extends StatelessWidget {
+  final bool visible;
+  final IconData icon;
+  final String label;
+  final String heroTag;
+  final Color backgroundColor;
+  final Color foregroundColor;
+  final VoidCallback onPressed;
+  const _SpeedDialAction({
+    required this.visible,
+    required this.icon,
+    required this.label,
+    required this.heroTag,
+    required this.backgroundColor,
+    required this.foregroundColor,
+    required this.onPressed,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return IgnorePointer(
+      ignoring: !visible,
+      child: AnimatedSlide(
+        offset: visible ? Offset.zero : const Offset(0, 0.35),
+        duration: const Duration(milliseconds: 220),
+        curve: Curves.easeOutCubic,
+        child: AnimatedOpacity(
+          opacity: visible ? 1 : 0,
+          duration: const Duration(milliseconds: 180),
+          child: FloatingActionButton.extended(
+            heroTag: heroTag,
+            onPressed: onPressed,
+            icon: Icon(icon),
+            label: Text(label),
+            backgroundColor: backgroundColor,
+            foregroundColor: foregroundColor,
+          ),
         ),
       ),
     );
   }
 }
 
-class _EmptyState extends StatelessWidget {
+class _PrivacyChip extends StatelessWidget {
+  const _PrivacyChip();
+  @override
+  Widget build(BuildContext context) {
+    const accent = Color(0xFF7AE0A0);
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 4),
+      decoration: BoxDecoration(
+        color: accent.withValues(alpha: 0.10),
+        borderRadius: BorderRadius.circular(999),
+        border: Border.all(color: accent.withValues(alpha: 0.25)),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Container(
+            width: 6, height: 6,
+            decoration: const BoxDecoration(
+              shape: BoxShape.circle,
+              color: accent,
+            ),
+          ),
+          const SizedBox(width: 6),
+          Text(
+            'Offline · On-device',
+            style: TextStyle(
+              fontSize: 10,
+              fontWeight: FontWeight.w600,
+              color: accent.withValues(alpha: 0.92),
+              letterSpacing: 0.3,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _EmptyState extends StatefulWidget {
+  @override
+  State<_EmptyState> createState() => _EmptyStateState();
+}
+
+class _EmptyStateState extends State<_EmptyState> with SingleTickerProviderStateMixin {
+  late final AnimationController _ctrl;
+
+  @override
+  void initState() {
+    super.initState();
+    _ctrl = AnimationController(
+      vsync: this,
+      duration: const Duration(seconds: 6),
+    )..repeat(reverse: true);
+  }
+
+  @override
+  void dispose() {
+    _ctrl.dispose();
+    super.dispose();
+  }
+
   @override
   Widget build(BuildContext context) {
     final cs = Theme.of(context).colorScheme;
@@ -187,19 +469,56 @@ class _EmptyState extends StatelessWidget {
         child: Column(
           mainAxisAlignment: MainAxisAlignment.center,
           children: [
-            Container(
-              width: 96, height: 96,
-              decoration: BoxDecoration(
-                shape: BoxShape.circle,
-                gradient: LinearGradient(
-                  begin: Alignment.topLeft, end: Alignment.bottomRight,
-                  colors: [
-                    cs.primary.withValues(alpha: 0.3),
-                    cs.primary.withValues(alpha: 0.05),
-                  ],
-                ),
-              ),
-              child: Icon(Icons.auto_stories_rounded, size: 44, color: cs.primary),
+            AnimatedBuilder(
+              animation: _ctrl,
+              builder: (_, __) {
+                final t = _ctrl.value;
+                return SizedBox(
+                  width: 160, height: 160,
+                  child: Stack(
+                    alignment: Alignment.center,
+                    children: [
+                      Transform.scale(
+                        scale: 0.92 + 0.16 * t,
+                        child: Container(
+                          decoration: BoxDecoration(
+                            shape: BoxShape.circle,
+                            gradient: RadialGradient(
+                              colors: [
+                                cs.primary.withValues(alpha: 0.20 * (1 - t)),
+                                cs.primary.withValues(alpha: 0.0),
+                              ],
+                            ),
+                          ),
+                        ),
+                      ),
+                      Transform.scale(
+                        scale: 0.86 + 0.06 * (1 - t),
+                        child: Container(
+                          width: 110, height: 110,
+                          decoration: BoxDecoration(
+                            shape: BoxShape.circle,
+                            gradient: LinearGradient(
+                              begin: Alignment.topLeft, end: Alignment.bottomRight,
+                              colors: [
+                                cs.primary.withValues(alpha: 0.32 + 0.10 * t),
+                                cs.primary.withValues(alpha: 0.04),
+                              ],
+                            ),
+                          ),
+                          child: Transform.translate(
+                            offset: Offset(0, -2 + 4 * t),
+                            child: Icon(
+                              Icons.auto_stories_rounded,
+                              size: 48, color: cs.primary,
+                            ),
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                );
+              },
             ),
             const SizedBox(height: 24),
             Text(
@@ -209,8 +528,8 @@ class _EmptyState extends StatelessWidget {
             ),
             const SizedBox(height: 8),
             Text(
-              'Tap Record now to capture a lecture on this phone, '
-              'or Join classroom to download one from a Pi nearby.',
+              'Tap the + below to record a lecture on this phone '
+              'or join a classroom Pi nearby.',
               style: Theme.of(context).textTheme.bodyMedium?.copyWith(
                     color: Colors.white.withValues(alpha: 0.6),
                   ),
@@ -226,7 +545,8 @@ class _EmptyState extends StatelessWidget {
 class _LectureCard extends StatelessWidget {
   final LectureRef ref;
   final VoidCallback onTap;
-  const _LectureCard({required this.ref, required this.onTap});
+  final VoidCallback? onLongPress;
+  const _LectureCard({required this.ref, required this.onTap, this.onLongPress});
 
   @override
   Widget build(BuildContext context) {
@@ -235,6 +555,7 @@ class _LectureCard extends StatelessWidget {
     return Card(
       child: InkWell(
         onTap: onTap,
+        onLongPress: onLongPress,
         borderRadius: BorderRadius.circular(16),
         child: Padding(
           padding: const EdgeInsets.all(16),
@@ -345,13 +666,19 @@ class _SetupBanner extends StatelessWidget {
             ),
             if (showGemma) ...[
               const SizedBox(height: 12),
-              _ModelRow(
-                label: 'Gemma 4 E2B',
-                subtitle: 'Reasoning & study packs · ~2.6 GB',
-                progress: gemmaProgress,
-                stageLabel: gemmaMessage,
-                isError: gemmaError,
-                errorMessage: gemmaError ? gemmaMessage : null,
+              Builder(
+                builder: (ctx) => InkWell(
+                  borderRadius: BorderRadius.circular(8),
+                  onTap: () => ModelInfoSheet.show(ctx),
+                  child: _ModelRow(
+                    label: 'Gemma 4 E2B',
+                    subtitle: 'Reasoning & study packs · tap for details',
+                    progress: gemmaProgress,
+                    stageLabel: gemmaMessage,
+                    isError: gemmaError,
+                    errorMessage: gemmaError ? gemmaMessage : null,
+                  ),
+                ),
               ),
             ],
             if (showWhisper) ...[
@@ -446,6 +773,64 @@ class _ModelRow extends StatelessWidget {
           ),
         ],
       ],
+    );
+  }
+}
+
+class _LectureActionSheet extends StatelessWidget {
+  final String title;
+  const _LectureActionSheet({required this.title});
+
+  @override
+  Widget build(BuildContext context) {
+    return SafeArea(
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(8, 12, 8, 12),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Center(
+              child: Container(
+                width: 36, height: 4,
+                margin: const EdgeInsets.only(bottom: 12),
+                decoration: BoxDecoration(
+                  color: Colors.white.withValues(alpha: 0.15),
+                  borderRadius: BorderRadius.circular(2),
+                ),
+              ),
+            ),
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 16),
+              child: Text(
+                title,
+                maxLines: 1, overflow: TextOverflow.ellipsis,
+                style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w600),
+              ),
+            ),
+            const SizedBox(height: 8),
+            ListTile(
+              leading: const Icon(Icons.translate_rounded),
+              title: const Text('Translate to…'),
+              onTap: () => Navigator.of(context).pop('translate'),
+            ),
+            ListTile(
+              leading: const Icon(Icons.drive_file_rename_outline_rounded),
+              title: const Text('Rename'),
+              onTap: () => Navigator.of(context).pop('rename'),
+            ),
+            ListTile(
+              leading: Icon(Icons.delete_outline_rounded,
+                  color: Theme.of(context).colorScheme.error),
+              title: Text(
+                'Delete',
+                style: TextStyle(color: Theme.of(context).colorScheme.error),
+              ),
+              onTap: () => Navigator.of(context).pop('delete'),
+            ),
+          ],
+        ),
+      ),
     );
   }
 }
