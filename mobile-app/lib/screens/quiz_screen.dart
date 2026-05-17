@@ -65,6 +65,13 @@ class _QuizScreenState extends State<QuizScreen> {
   }
 
   void _startGeneration(Lecture lecture) {
+    if (widget.gemma.status != GemmaStatus.ready) {
+      setState(() {
+        _error = 'Gemma is still loading. Open this lecture again in a moment.';
+        _generating = false;
+      });
+      return;
+    }
     final ctx = lecture.transcript.map((l) => l.text).join(' ');
     final langName = langNames[lecture.manifest.lang] ?? 'English';
     _sub = widget.gemma

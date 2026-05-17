@@ -65,9 +65,21 @@ class _LecturesScreenState extends State<LecturesScreen> {
     });
   }
 
-  bool get _showSetup =>
-      widget.gemma.status != GemmaStatus.ready ||
-      widget.whisper.status != WhisperStatus.ready;
+  /// Show the setup banner ONLY for things the user needs to see — an
+  /// active download with a real progress percentage, or an error. On a
+  /// returning launch the model is already on disk and we're just doing the
+  /// mmap step (~10-30 s); that doesn't deserve a banner every cold start.
+  bool get _showSetup {
+    final gemmaError = widget.gemma.status == GemmaStatus.error;
+    final whisperError = widget.whisper.status == WhisperStatus.error;
+    final gemmaActiveDownload = widget.gemma.status == GemmaStatus.downloading &&
+        _gemmaProgress != null &&
+        _gemmaProgress! < 0.999;
+    final whisperActive = widget.whisper.status != WhisperStatus.ready &&
+        widget.whisper.status != WhisperStatus.error;
+    return gemmaError || whisperError || gemmaActiveDownload ||
+        (whisperActive && _whisperProgress != null);
+  }
 
   Future<void> _showCardMenu(LectureRef ref) async {
     HapticFeedback.mediumImpact();

@@ -16,6 +16,41 @@ import 'theme.dart';
 const bool kAutoBench = bool.fromEnvironment('AUTOBENCH', defaultValue: false);
 
 void main() {
+  // Convert render-time exceptions from a pure black iOS-release screen
+  // into a visible fallback so a single bad widget never bricks the app.
+  ErrorWidget.builder = (FlutterErrorDetails details) {
+    return Material(
+      color: const Color(0xFF101013),
+      child: SafeArea(
+        child: Padding(
+          padding: const EdgeInsets.all(24),
+          child: Column(
+            mainAxisAlignment: MainAxisAlignment.center,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const Icon(Icons.error_outline_rounded,
+                  color: Color(0xFFE57373), size: 32),
+              const SizedBox(height: 12),
+              const Text(
+                'Something broke rendering this screen.',
+                style: TextStyle(fontSize: 16, fontWeight: FontWeight.w600),
+              ),
+              const SizedBox(height: 8),
+              Text(
+                details.exceptionAsString(),
+                style: const TextStyle(fontSize: 12, height: 1.4, color: Colors.white70),
+              ),
+              const SizedBox(height: 16),
+              const Text(
+                'Tap back to recover.',
+                style: TextStyle(fontSize: 12, color: Colors.white54),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  };
   runApp(const LocalLearningApp());
 }
 

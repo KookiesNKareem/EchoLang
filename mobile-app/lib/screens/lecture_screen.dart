@@ -75,7 +75,14 @@ class _LectureScreenState extends State<LectureScreen> {
     String langCode,
     String langName,
   ) async {
-    if (widget.gemma.status != GemmaStatus.ready) return;
+    if (widget.gemma.status != GemmaStatus.ready) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Gemma is still loading — try again in a moment.')),
+        );
+      }
+      return;
+    }
     setState(() {
       _packStreaming = true;
       _partialPack = StudyPack(
@@ -130,12 +137,22 @@ class _LectureScreenState extends State<LectureScreen> {
   }
 
   Future<void> _translate(Lecture lecture, {VoidCallback? onStart}) async {
-    final targetCode = await showModalBottomSheet<String>(
-      context: context,
-      isScrollControlled: true,
-      backgroundColor: Colors.transparent,
-      builder: (sheetCtx) => _LanguagePickerSheet(),
-    );
+    String? targetCode;
+    try {
+      targetCode = await showModalBottomSheet<String>(
+        context: context,
+        isScrollControlled: true,
+        backgroundColor: Colors.transparent,
+        builder: (sheetCtx) => _LanguagePickerSheet(),
+      );
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Couldn\'t open language picker: $e')),
+        );
+      }
+      return;
+    }
     if (targetCode == null || !mounted) return;
     final targetName = langNames[targetCode] ?? targetCode;
 
@@ -263,6 +280,7 @@ class _LectureScreenState extends State<LectureScreen> {
                         lecture: lecture,
                         streaming: _packStreaming,
                         streamingPack: _partialPack,
+                        gemmaReady: widget.gemma.status == GemmaStatus.ready,
                       );
                     case 'Translation':
                       return _TranslationTab(
@@ -498,10 +516,12 @@ class _StudyPackTab extends StatelessWidget {
   final Lecture lecture;
   final bool streaming;
   final StudyPack? streamingPack;
+  final bool gemmaReady;
   const _StudyPackTab({
     required this.lecture,
     this.streaming = false,
     this.streamingPack,
+    this.gemmaReady = false,
   });
 
   @override
@@ -576,7 +596,7 @@ class _StudyPackTab extends StatelessWidget {
         ],
         if (!streaming) ...[
           const SizedBox(height: 24),
-          _QuizCta(dirPath: lecture.dir.path),
+          _QuizCta(lecture: lecture, gemmaReady: gemmaReady),
         ],
       ],
     );
@@ -584,71 +604,86 @@ class _StudyPackTab extends StatelessWidget {
 }
 
 class _QuizCta extends StatelessWidget {
-  final String dirPath;
-  const _QuizCta({required this.dirPath});
+  final Lecture lecture;
+  final bool gemmaReady;
+  const _QuizCta({required this.lecture, required this.gemmaReady});
 
   @override
   Widget build(BuildContext context) {
     final cs = Theme.of(context).colorScheme;
-    return Material(
-      color: Colors.transparent,
-      child: InkWell(
-        borderRadius: BorderRadius.circular(16),
-        onTap: () {
-          HapticFeedback.mediumImpact();
-          context.push('/quiz/${Uri.encodeComponent(dirPath)}');
-        },
-        child: Container(
-          padding: const EdgeInsets.all(18),
-          decoration: BoxDecoration(
-            borderRadius: BorderRadius.circular(16),
-            gradient: LinearGradient(
-              begin: Alignment.topLeft, end: Alignment.bottomRight,
-              colors: [
-                cs.primary.withValues(alpha: 0.22),
-                cs.primary.withValues(alpha: 0.06),
+    final enabled = gemmaReady;
+    return Opacity(
+      opacity: enabled ? 1.0 : 0.55,
+      child: Material(
+        color: Colors.transparent,
+        child: InkWell(
+          borderRadius: BorderRadius.circular(16),
+          onTap: () {
+            if (!enabled) {
+              ScaffoldMessenger.of(context).showSnackBar(
+                const SnackBar(content: Text('Gemma is still loading — try again in a moment.')),
+              );
+              return;
+            }
+            HapticFeedback.mediumImpact();
+            context.push('/quiz/${Uri.encodeComponent(lecture.dir.path)}');
+          },
+          child: Container(
+            padding: const EdgeInsets.all(18),
+            decoration: BoxDecoration(
+              borderRadius: BorderRadius.circular(16),
+              gradient: LinearGradient(
+                begin: Alignment.topLeft, end: Alignment.bottomRight,
+                colors: [
+                  cs.primary.withValues(alpha: 0.22),
+                  cs.primary.withValues(alpha: 0.06),
+                ],
+              ),
+              border: Border.all(color: cs.primary.withValues(alpha: 0.35)),
+            ),
+            child: Row(
+              children: [
+                Container(
+                  width: 44, height: 44,
+                  alignment: Alignment.center,
+                  decoration: BoxDecoration(
+                    shape: BoxShape.circle,
+                    color: cs.primary.withValues(alpha: 0.22),
+                  ),
+                  child: Icon(Icons.fact_check_rounded,
+                      color: cs.primary, size: 22),
+                ),
+                const SizedBox(width: 14),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        'Quiz me on this lecture',
+                        style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                              color: Colors.white,
+                            ),
+                      ),
+                      const SizedBox(height: 4),
+                      Text(
+                        enabled
+                            ? 'Five multiple-choice questions, generated on your phone.'
+                            : 'Gemma is still loading…',
+                        style: TextStyle(
+                          fontSize: 12.5, height: 1.4,
+                          color: Colors.white.withValues(alpha: 0.65),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+                const SizedBox(width: 6),
+                Icon(
+                  enabled ? Icons.arrow_forward_rounded : Icons.hourglass_empty_rounded,
+                  color: cs.primary, size: 22,
+                ),
               ],
             ),
-            border: Border.all(color: cs.primary.withValues(alpha: 0.35)),
-          ),
-          child: Row(
-            children: [
-              Container(
-                width: 44, height: 44,
-                alignment: Alignment.center,
-                decoration: BoxDecoration(
-                  shape: BoxShape.circle,
-                  color: cs.primary.withValues(alpha: 0.22),
-                ),
-                child: Icon(Icons.fact_check_rounded,
-                    color: cs.primary, size: 22),
-              ),
-              const SizedBox(width: 14),
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(
-                      'Quiz me on this lecture',
-                      style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                            color: Colors.white,
-                          ),
-                    ),
-                    const SizedBox(height: 4),
-                    Text(
-                      'Five multiple-choice questions, generated on your phone.',
-                      style: TextStyle(
-                        fontSize: 12.5, height: 1.4,
-                        color: Colors.white.withValues(alpha: 0.65),
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-              const SizedBox(width: 6),
-              Icon(Icons.arrow_forward_rounded,
-                  color: cs.primary, size: 22),
-            ],
           ),
         ),
       ),
@@ -942,15 +977,20 @@ class _LanguagePickerSheet extends StatelessWidget {
     final cs = Theme.of(context).colorScheme;
     final entries =
         langNames.entries.where((e) => e.key != 'en').toList(growable: false);
-    final screenH = MediaQuery.of(context).size.height;
+    // Explicit height (not just maxHeight) so the Column + Expanded ListView
+    // can resolve their constraints on every iOS version. Earlier we used
+    // Flexible + shrinkWrap inside a max-height-only Container, which works
+    // on iOS 26 but throws layout cycles on older iOS — manifests as a
+    // black screen the instant the sheet is opened.
+    final media = MediaQuery.of(context);
+    final sheetH = media.size.height * 0.72;
     return Container(
-      constraints: BoxConstraints(maxHeight: screenH * 0.85),
+      height: sheetH,
       decoration: const BoxDecoration(
         color: Color(0xFF15151A),
         borderRadius: BorderRadius.vertical(top: Radius.circular(22)),
       ),
       child: Column(
-        mainAxisSize: MainAxisSize.min,
         children: [
           const SizedBox(height: 10),
           Container(
@@ -994,9 +1034,8 @@ class _LanguagePickerSheet extends StatelessWidget {
             ),
           ),
           const SizedBox(height: 8),
-          Flexible(
+          Expanded(
             child: ListView.separated(
-              shrinkWrap: true,
               physics: const ClampingScrollPhysics(),
               padding: const EdgeInsets.fromLTRB(12, 4, 12, 20),
               itemCount: entries.length,
