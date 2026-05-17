@@ -133,13 +133,24 @@ class _LectureScreenState extends State<LectureScreen> {
 
     final sourceText = lecture.transcript.map((l) => l.text).join(' ');
     try {
+      final buf = StringBuffer();
+      DateTime lastFlush = DateTime.now();
       await for (final token in widget.gemma.translateStream(
         text: sourceText,
         targetLanguageName: targetName,
       )) {
         if (_cancelTranslation || !mounted) break;
-        setState(() => _streamingText += token);
+        buf.write(token);
+        // Coalesce UI updates: rebuild ~20 fps instead of per token, so the
+        // NestedScrollView isn't re-laying-out a 6000-char text 40+ times a
+        // second.
+        if (DateTime.now().difference(lastFlush).inMilliseconds >= 50) {
+          setState(() => _streamingText = buf.toString());
+          lastFlush = DateTime.now();
+        }
       }
+      // Final flush so the last few tokens land.
+      if (mounted) setState(() => _streamingText = buf.toString());
       if (_cancelTranslation || !mounted) {
         if (mounted) {
           setState(() {

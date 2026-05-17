@@ -120,8 +120,12 @@ class GemmaService {
       for (final l in _listeners) {
         l(null, _statusMessage!);
       }
+      // 8192 covers a full lecture-translation prefill (~1500 tok transcript
+      // + preamble) plus a ~6000-char output without bumping into the
+      // context cap. The .litertlm we ship is built for 64k, so this is well
+      // within the model's headroom.
       _model = await FlutterGemma.getActiveModel(
-        maxTokens: 2048,
+        maxTokens: 8192,
         preferredBackend: PreferredBackend.gpu,
       );
       _chat = await _model!.createChat();
