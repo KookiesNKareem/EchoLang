@@ -1,6 +1,11 @@
+import 'dart:convert';
+import 'dart:io';
+
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:go_router/go_router.dart';
+import 'package:path_provider/path_provider.dart';
+import 'package:uuid/uuid.dart';
 
 import '../data/bundle_store.dart';
 import '../data/models.dart';
@@ -32,11 +37,13 @@ class _LecturesScreenState extends State<LecturesScreen> {
   String? _whisperMessage;
 
   bool _fabOpen = false;
+  Map<String, dynamic>? _recoverable;
 
   @override
   void initState() {
     super.initState();
     _future = widget.store.list();
+    _checkForRecoverableRecording();
     widget.gemma
         .ensureReady(onProgress: (p, status) {
           if (!mounted) return;
@@ -63,6 +70,80 @@ class _LecturesScreenState extends State<LecturesScreen> {
     setState(() {
       _future = widget.store.list();
     });
+  }
+
+  /// Look for an in-progress recording file the record screen flushes to
+  /// disk every 10 s. If found, surface a recovery banner so the user can
+  /// rescue a recording that crashed before they hit stop.
+  Future<void> _checkForRecoverableRecording() async {
+    try {
+      final docs = await getApplicationDocumentsDirectory();
+      final f = File('${docs.path}/in_progress_recording.json');
+      if (!await f.exists()) return;
+      final raw = await f.readAsString();
+      if (raw.trim().isEmpty) return;
+      final parsed = jsonDecode(raw) as Map<String, dynamic>;
+      final transcript = (parsed['transcript'] as String?)?.trim() ?? '';
+      if (transcript.split(RegExp(r'\s+')).length < 5) {
+        // Tiny scrap; not worth surfacing. Clean up silently.
+        await f.delete();
+        return;
+      }
+      if (!mounted) return;
+      setState(() => _recoverable = parsed);
+    } catch (_) {}
+  }
+
+  Future<void> _restoreRecoverable() async {
+    final data = _recoverable;
+    if (data == null) return;
+    setState(() => _recoverable = null);
+    final transcript = (data['transcript'] as String?)?.trim() ?? '';
+    final startedAtMs = data['started_at_ms'] as int?;
+    final elapsedMs = (data['elapsed_ms'] as int?) ?? 0;
+    final title = (data['title'] as String?)?.trim().isNotEmpty == true
+        ? data['title'] as String
+        : 'Recovered lecture';
+    final classId = const Uuid().v4().substring(0, 12);
+    final startedAt = startedAtMs != null
+        ? DateTime.fromMillisecondsSinceEpoch(startedAtMs)
+        : DateTime.now().subtract(Duration(milliseconds: elapsedMs));
+    final endedAt = startedAt.add(Duration(milliseconds: elapsedMs));
+    try {
+      await widget.store.saveLocal(
+        classId: classId,
+        title: title,
+        lang: 'en',
+        startedAt: startedAt,
+        endedAt: endedAt,
+        transcript: transcript,
+        studyPack: null,
+      );
+      try {
+        final docs = await getApplicationDocumentsDirectory();
+        final f = File('${docs.path}/in_progress_recording.json');
+        if (await f.exists()) await f.delete();
+      } catch (_) {}
+      _refresh();
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Recovered: $title')),
+      );
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Recover failed: $e')),
+      );
+    }
+  }
+
+  Future<void> _discardRecoverable() async {
+    setState(() => _recoverable = null);
+    try {
+      final docs = await getApplicationDocumentsDirectory();
+      final f = File('${docs.path}/in_progress_recording.json');
+      if (await f.exists()) await f.delete();
+    } catch (_) {}
   }
 
   /// Show setup banner only for active downloads or errors; skip mmap on returning launch.
@@ -261,6 +342,14 @@ class _LecturesScreenState extends State<LecturesScreen> {
                             whisperStatus: widget.whisper.status,
                             whisperProgress: _whisperProgress,
                             whisperMessage: _whisperMessage,
+                          ),
+                        ],
+                        if (_recoverable != null) ...[
+                          const SizedBox(height: 16),
+                          _RecoveryBanner(
+                            data: _recoverable!,
+                            onRestore: _restoreRecoverable,
+                            onDiscard: _discardRecoverable,
                           ),
                         ],
                       ],
@@ -845,6 +934,96 @@ class _LectureActionSheet extends StatelessWidget {
                 style: TextStyle(color: Theme.of(context).colorScheme.error),
               ),
               onTap: () => Navigator.of(context).pop('delete'),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _RecoveryBanner extends StatelessWidget {
+  final Map<String, dynamic> data;
+  final VoidCallback onRestore;
+  final VoidCallback onDiscard;
+  const _RecoveryBanner({
+    required this.data,
+    required this.onRestore,
+    required this.onDiscard,
+  });
+
+  String _fmtAge(int? startedAtMs) {
+    if (startedAtMs == null) return 'unknown time';
+    final started = DateTime.fromMillisecondsSinceEpoch(startedAtMs);
+    final diff = DateTime.now().difference(started);
+    if (diff.inMinutes < 60) return '${diff.inMinutes} min ago';
+    if (diff.inHours < 24) return '${diff.inHours} hr ago';
+    return '${diff.inDays} day${diff.inDays == 1 ? '' : 's'} ago';
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
+    final transcript = (data['transcript'] as String?) ?? '';
+    final words = transcript.trim().isEmpty
+        ? 0
+        : transcript.trim().split(RegExp(r'\s+')).length;
+    final age = _fmtAge(data['started_at_ms'] as int?);
+    final title = (data['title'] as String?) ?? 'Recovered lecture';
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(14),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                Container(
+                  width: 32, height: 32,
+                  decoration: BoxDecoration(
+                    color: cs.tertiary.withValues(alpha: 0.18),
+                    borderRadius: BorderRadius.circular(8),
+                  ),
+                  child: Icon(Icons.restore_rounded,
+                      color: cs.tertiary, size: 18),
+                ),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        'Unsaved recording',
+                        style: Theme.of(context).textTheme.titleSmall,
+                      ),
+                      const SizedBox(height: 2),
+                      Text(
+                        '"$title" · $words word${words == 1 ? '' : 's'} · $age',
+                        maxLines: 1, overflow: TextOverflow.ellipsis,
+                        style: TextStyle(
+                          fontSize: 12,
+                          color: Colors.white.withValues(alpha: 0.6),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 12),
+            Row(
+              mainAxisAlignment: MainAxisAlignment.end,
+              children: [
+                TextButton(
+                  onPressed: onDiscard,
+                  child: const Text('Discard'),
+                ),
+                const SizedBox(width: 4),
+                FilledButton(
+                  onPressed: onRestore,
+                  child: const Text('Restore'),
+                ),
+              ],
             ),
           ],
         ),

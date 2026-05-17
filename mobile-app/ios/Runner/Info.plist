@@ -68,6 +68,10 @@
 	<string>EchoLang records audio so it can transcribe the lecture on this device — entirely offline, nothing leaves your phone.</string>
 	<key>NSSpeechRecognitionUsageDescription</key>
 	<string>EchoLang uses Apple's on-device speech recognition to turn what your teacher says into text — runs locally, nothing leaves your phone.</string>
+	<key>UIBackgroundModes</key>
+	<array>
+		<string>audio</string>
+	</array>
 	<!-- Required because a transitive plugin (image_picker / file picker via
 	     background_downloader, etc.) links a UIKit API that touches the photo
 	     library. EchoLang itself doesn't ask for photo access; this string is

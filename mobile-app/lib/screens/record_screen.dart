@@ -5,6 +5,7 @@
 // in the lectures list as if it had been downloaded from a Pi.
 
 import 'dart:async';
+import 'dart:convert';
 import 'dart:io';
 
 import 'package:flutter/material.dart';
@@ -118,8 +119,16 @@ class _RecordScreenState extends State<RecordScreen> with SingleTickerProviderSt
       if (_latestPartial.isEmpty) return;
       try {
         final docs = await getApplicationDocumentsDirectory();
-        final f = File('${docs.path}/in_progress_recording.txt');
-        await f.writeAsString(_latestPartial);
+        final f = File('${docs.path}/in_progress_recording.json');
+        final payload = {
+          'started_at_ms': _startedAt?.millisecondsSinceEpoch,
+          'elapsed_ms': _elapsed.inMilliseconds,
+          'title': _titleCtrl.text.trim().isEmpty
+              ? 'Recovered lecture'
+              : _titleCtrl.text.trim(),
+          'transcript': _latestPartial,
+        };
+        await f.writeAsString(jsonEncode(payload));
       } catch (_) {}
     });
   }
@@ -166,7 +175,7 @@ class _RecordScreenState extends State<RecordScreen> with SingleTickerProviderSt
       // Recording made it safely to disk — clear the recovery file.
       try {
         final docs = await getApplicationDocumentsDirectory();
-        final f = File('${docs.path}/in_progress_recording.txt');
+        final f = File('${docs.path}/in_progress_recording.json');
         if (await f.exists()) await f.delete();
       } catch (_) {}
       if (!mounted) return;
