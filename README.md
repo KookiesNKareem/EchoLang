@@ -54,8 +54,8 @@ flowchart LR
 ## On-device performance
 
 Measured live on an iPhone running iOS 26 with the MTP-enabled Gemma 4 E2B
-LiteRT bundle. Three Q&A trials over a fixed lecture transcript; each streamed
-token is counted (not estimated). Reproduce with:
+LiteRT bundle. Three Q&A trials over a fixed lecture transcript; each
+streamed token counted directly (not estimated). Reproduce with:
 
 ```bash
 cd mobile-app
@@ -63,14 +63,23 @@ flutter run --release --dart-define=AUTOBENCH=true -d <iphone-udid>
 # then pull Documents/bench_results.json via xcrun devicectl
 ```
 
-| Workload | First-token | Total | Tokens | Decode rate |
-|---|---|---|---|---|
-| 1-sentence answer | 448 ms | 1.07 s | 25 | **40.0 tok/s** |
-| Single-fact lookup | 465 ms | 0.69 s | 9 | 39.5 tok/s |
-| Multi-clause explanation | 680 ms | 2.56 s | 52 | 27.6 tok/s |
+The default Q&A path **primes the chat with the lecture transcript once**
+and reuses the session for every follow-up question, instead of forcing
+Gemma to re-prefill the ~6000-char transcript on every turn. Same hardware,
+same model — only the KV cache management differs:
 
-A short answer streams in under 1.1 s end-to-end. All three answers were
-factually correct and grounded in the provided transcript context.
+| Path | First-token | Decode rate | Notes |
+|---|---|---|---|
+| Fresh chat per question (naive) | 403–447 ms | 43 tok/s | Re-prefills the transcript every time |
+| **Primed chat, reused (default)** | **80–105 ms** | 42 tok/s | **~5× faster** time-to-first-token |
+
+A short follow-up answer ("Why do leaves appear green?" → 9 tokens) now
+streams to completion in **293 ms** end-to-end. Decode rate is unchanged
+because the bottleneck is the same matmul throughput; the savings come
+entirely from skipping redundant prefill on the lecture context.
+
+All answers in both modes were factually correct and grounded in the
+provided transcript context.
 
 ## Status
 
