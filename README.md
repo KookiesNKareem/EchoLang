@@ -18,9 +18,15 @@
 
 ## Architecture
 
-EchoLang has two independent flows that converge on the same lecture viewer:
-the **classroom flow** (teacher + Pi + many students) and the **standalone
-flow** (just the phone, no Pi anywhere — works anywhere).
+EchoLang has two independent flows that both land in the same on-device
+lecture viewer:
+
+- **Classroom flow** — Pi captures audio, transcribes, translates live to
+  many students, and packages an end-of-class study bundle that can
+  optionally be downloaded to a phone.
+- **Standalone flow** — phone alone. A seeded sample lecture (or one
+  recorded on the device) feeds the viewer directly; translation, Q&A, and
+  starters all run locally with no Pi anywhere.
 
 ```mermaid
 flowchart LR
@@ -28,13 +34,13 @@ flowchart LR
     whisper --> gemma_pi[Gemma 4 E2B<br/>via Ollama]
     gemma_pi -->|SSE| pwa[Student PWA<br/>live captions]
     gemma_pi -->|end of class| bundle[Study bundle<br/>transcript + translations + study pack]
-    bundle --> lecture
 
     builtin([Seeded sample lecture<br/>or on-device recording]) --> lecture
-    lecture[Lecture viewer<br/>iOS / Android app]
+    bundle -.->|optional bundle download| lecture
+    lecture[Lecture viewer]
     lecture --> translate[On-device translation<br/>27 languages, streams live]
     lecture --> qa[On-device Q&A<br/>primed chat, ~85 ms first token]
-    lecture --> starters[Localized hint + 3 suggested questions<br/>generated in lecture's language]
+    lecture --> starters[Localized hint + 3 suggested questions<br/>in lecture's language]
 
     subgraph classroom [Classroom flow — Raspberry Pi 5]
         whisper
@@ -43,7 +49,7 @@ flowchart LR
         bundle
     end
 
-    subgraph phone [Standalone flow — Gemma 4 E2B LiteRT MTP on device]
+    subgraph phone [On-device — Gemma 4 E2B LiteRT MTP]
         builtin
         lecture
         translate
@@ -52,9 +58,9 @@ flowchart LR
     end
 ```
 
-Every box inside the **phone** subgraph runs entirely on-device. No
-network, no cloud, no accounts — the app is fully usable without ever
-talking to a Pi.
+Everything inside the **on-device** subgraph runs locally on the phone. The
+standalone flow is the solid `builtin → lecture` edge — it never crosses
+into the classroom subgraph, so it works with no Pi and no network.
 
 ## Repository layout
 
