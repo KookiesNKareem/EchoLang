@@ -115,13 +115,15 @@ class _QAScreenState extends State<QAScreen> with SingleTickerProviderStateMixin
     _scrollToBottom();
     try {
       final ctx = _lecture!.transcript.map((l) => l.text).join(' ');
-      final answer = await widget.gemma.ask(lectureContext: ctx, question: q);
+      final buf = StringBuffer();
+      await for (final token in widget.gemma.askStream(lectureContext: ctx, question: q)) {
+        if (!mounted) return;
+        buf.write(token);
+        setState(() => _messages.last.text = buf.toString());
+        _scrollToBottom();
+      }
       if (!mounted) return;
-      setState(() {
-        _messages.last.text = answer;
-        _generating = false;
-      });
-      _scrollToBottom();
+      setState(() => _generating = false);
     } catch (e) {
       if (!mounted) return;
       setState(() {

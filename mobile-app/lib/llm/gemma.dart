@@ -158,14 +158,35 @@ class GemmaService {
     _primedContextHash = hash;
   }
 
-  /// Ask a question grounded in the lecture transcript. The first call for a
-  /// given transcript pays the prefill cost; subsequent calls within the
+  /// Ask a question and stream the answer token-by-token. The first call for
+  /// a given transcript pays the prefill cost; subsequent calls within the
   /// same session reuse the primed chat and skip re-encoding the transcript.
-  Future<String> ask({required String lectureContext, required String question}) async {
+  Stream<String> askStream({
+    required String lectureContext,
+    required String question,
+  }) async* {
     await primeContext(lectureContext);
     await _chat!.addQueryChunk(Message.text(text: question, isUser: true));
-    final response = await _chat!.generateChatResponse();
-    return _extractText(response);
+    await for (final chunk in _chat!.generateChatResponseAsync()) {
+      switch (chunk) {
+        case TextResponse(:final token):
+          yield token;
+        case ThinkingResponse(:final content):
+          yield content;
+        default:
+          // Function-call responses aren't used in plain lecture Q&A; ignore.
+          break;
+      }
+    }
+  }
+
+  /// Convenience wrapper for callers that only need the full answer.
+  Future<String> ask({required String lectureContext, required String question}) async {
+    final buf = StringBuffer();
+    await for (final t in askStream(lectureContext: lectureContext, question: question)) {
+      buf.write(t);
+    }
+    return buf.toString().trim();
   }
 
   /// Streaming benchmark variant of [ask].
@@ -282,10 +303,8 @@ class GemmaService {
 
   String _extractText(dynamic response) {
     if (response is String) return response.trim();
-    try {
-      final t = (response as dynamic).text;
-      if (t is String) return t.trim();
-    } catch (_) {}
+    if (response is TextResponse) return response.token.trim();
+    if (response is ThinkingResponse) return response.content.trim();
     return response.toString().trim();
   }
 
