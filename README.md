@@ -20,7 +20,7 @@
 
 EchoLang has two independent flows that converge on the same lecture viewer:
 the **classroom flow** (teacher + Pi + many students) and the **standalone
-flow** (just the phone, no Pi anywhere — works on an airplane).
+flow** (just the phone, no Pi anywhere — works anywhere).
 
 ```mermaid
 flowchart LR
