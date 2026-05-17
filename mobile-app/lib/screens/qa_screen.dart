@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 
 import '../data/bundle_store.dart';
 import '../data/models.dart';
+import '../data/preferences.dart';
 import '../llm/gemma.dart';
 
 class QAScreen extends StatefulWidget {
@@ -36,6 +37,9 @@ class _QAScreenState extends State<QAScreen> with SingleTickerProviderStateMixin
   late final AnimationController _typingDots;
   bool _generating = false;
   String? _modelStatus;
+  QAStarters? _starters;
+  bool _startersLoading = false;
+  String? _startersForLang;
 
   @override
   void initState() {
@@ -95,6 +99,37 @@ class _QAScreenState extends State<QAScreen> with SingleTickerProviderStateMixin
     if (widget.gemma.status != GemmaStatus.ready) return;
     final ctx = _lecture!.transcript.map((l) => l.text).join(' ');
     unawaited(widget.gemma.primeContext(ctx).catchError((_) {}));
+    _maybeLoadStarters();
+  }
+
+  /// Generate localized hint + suggested questions for the lecture's current
+  /// language. Re-runs if the lecture's lang has changed since the last
+  /// generation (e.g. after the user translated the lecture).
+  void _maybeLoadStarters() {
+    if (_lecture == null) return;
+    if (widget.gemma.status != GemmaStatus.ready) return;
+    final lang = _lecture!.manifest.lang;
+    if (_startersLoading || _startersForLang == lang) return;
+    _startersLoading = true;
+    _startersForLang = lang;
+    final ctx = _lecture!.transcript.map((l) => l.text).join(' ');
+    final langName = langNames[lang] ?? 'English';
+    () async {
+      try {
+        final s = await widget.gemma.generateStarters(
+          lectureContext: ctx,
+          languageName: langName,
+        );
+        if (!mounted) return;
+        setState(() {
+          _starters = s;
+          _startersLoading = false;
+        });
+      } catch (_) {
+        if (!mounted) return;
+        setState(() => _startersLoading = false);
+      }
+    }();
   }
 
   Future<void> _send([String? prefilled]) async {
@@ -206,9 +241,17 @@ class _QAScreenState extends State<QAScreen> with SingleTickerProviderStateMixin
                     },
                   ),
           ),
+          if (_starters != null &&
+              _starters!.questions.isNotEmpty &&
+              _messages.isEmpty)
+            _SuggestionRow(
+              questions: _starters!.questions,
+              onPick: _send,
+            ),
           _Composer(
             controller: _input,
             enabled: !_generating && widget.gemma.status == GemmaStatus.ready,
+            hintText: _starters?.hint,
             onSubmit: () => _send(),
           ),
         ],
@@ -444,14 +487,68 @@ class _TypingDots extends StatelessWidget {
   }
 }
 
+class _SuggestionRow extends StatelessWidget {
+  final List<String> questions;
+  final void Function(String) onPick;
+  const _SuggestionRow({required this.questions, required this.onPick});
+
+  @override
+  Widget build(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
+    return SizedBox(
+      height: 44,
+      child: ListView.separated(
+        scrollDirection: Axis.horizontal,
+        padding: const EdgeInsets.fromLTRB(12, 4, 12, 4),
+        itemCount: questions.length,
+        separatorBuilder: (_, __) => const SizedBox(width: 8),
+        itemBuilder: (_, i) {
+          final q = questions[i];
+          return Material(
+            color: cs.primary.withValues(alpha: 0.12),
+            shape: RoundedRectangleBorder(
+              side: BorderSide(color: cs.primary.withValues(alpha: 0.32)),
+              borderRadius: BorderRadius.circular(20),
+            ),
+            child: InkWell(
+              borderRadius: BorderRadius.circular(20),
+              onTap: () => onPick(q),
+              child: Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Icon(Icons.auto_awesome_rounded,
+                        size: 14, color: cs.primary),
+                    const SizedBox(width: 6),
+                    Text(
+                      q,
+                      style: TextStyle(
+                        fontSize: 13, fontWeight: FontWeight.w500,
+                        color: Colors.white.withValues(alpha: 0.88),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          );
+        },
+      ),
+    );
+  }
+}
+
 class _Composer extends StatelessWidget {
   final TextEditingController controller;
   final bool enabled;
   final VoidCallback onSubmit;
+  final String? hintText;
   const _Composer({
     required this.controller,
     required this.enabled,
     required this.onSubmit,
+    this.hintText,
   });
 
   @override
@@ -475,15 +572,15 @@ class _Composer extends StatelessWidget {
                 child: TextField(
                   controller: controller,
                   enabled: enabled,
-                  decoration: const InputDecoration(
-                    hintText: 'Ask Gemma about this lecture…',
+                  decoration: InputDecoration(
+                    hintText: hintText ?? 'Ask Gemma about this lecture…',
                     filled: false,
                     fillColor: Colors.transparent,
                     border: InputBorder.none,
                     enabledBorder: InputBorder.none,
                     focusedBorder: InputBorder.none,
                     disabledBorder: InputBorder.none,
-                    contentPadding: EdgeInsets.symmetric(vertical: 14),
+                    contentPadding: const EdgeInsets.symmetric(vertical: 14),
                     isDense: true,
                   ),
                   minLines: 1,

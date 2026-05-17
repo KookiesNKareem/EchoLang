@@ -8,6 +8,14 @@ import '../data/models.dart';
 
 enum GemmaStatus { notReady, downloading, ready, error }
 
+/// Localized Q&A starter content — the input-field hint and 2–3 suggested
+/// questions, generated on-device for whatever language the lecture is in.
+class QAStarters {
+  final String hint;
+  final List<String> questions;
+  const QAStarters({required this.hint, required this.questions});
+}
+
 class GemmaBenchResult {
   final Duration firstTokenLatency;
   final Duration totalDuration;
@@ -237,6 +245,47 @@ class GemmaService {
       tokensPerSec: tps,
       output: buf.toString(),
     );
+  }
+
+  /// Generate the localized Q&A starter content — input-field hint + three
+  /// suggested questions in [languageName]. Runs in a fresh chat so it does
+  /// not evict the primed lecture context.
+  Future<QAStarters> generateStarters({
+    required String lectureContext,
+    required String languageName,
+  }) async {
+    if (_status != GemmaStatus.ready || _model == null) {
+      throw StateError('Gemma not ready (status=$_status)');
+    }
+    final trimmed = _trimContext(lectureContext);
+    final prompt =
+        'You will be shown a lecture transcript. Generate study aids for a '
+        'student about to review it. Output STRICT JSON in this exact shape, '
+        'no commentary, no code fence:\n'
+        '{\n'
+        '  "hint": "...",\n'
+        '  "questions": ["...", "...", "..."]\n'
+        '}\n\n'
+        'Rules:\n'
+        '- "hint" is a short input-field placeholder, 4-8 words, in $languageName. '
+        'Something like "Ask anything about this lecture…" but in $languageName.\n'
+        '- "questions" is exactly 3 short, specific questions a student would '
+        'ask after this lecture. Each 6-14 words. Written in $languageName.\n'
+        '- The whole JSON must be valid and contain only $languageName text '
+        'in the string values.\n\n'
+        'Transcript:\n"""\n$trimmed\n"""\n\nJSON:';
+    final chat = await _model!.createChat();
+    await chat.addQueryChunk(Message.text(text: prompt, isUser: true));
+    final response = await chat.generateChatResponse();
+    final raw = _extractText(response);
+    final json = _extractJson(raw);
+    final hint = (json['hint'] as String?)?.trim() ?? 'Ask anything about this lecture…';
+    final questions = ((json['questions'] as List?) ?? const [])
+        .whereType<String>()
+        .map((s) => s.trim())
+        .where((s) => s.isNotEmpty)
+        .toList(growable: false);
+    return QAStarters(hint: hint, questions: questions);
   }
 
   /// On-device translation. Streams the translated text token-by-token.
