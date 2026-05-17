@@ -93,24 +93,75 @@ class WhisperService {
       throw StateError('Speech recognizer not ready (status=$_status)');
     }
     if (_backend == SpeechBackend.native) {
-      await _native.listen(
-        onResult: (r) => onPartial(r.recognizedWords),
-        localeId: localeId,
-        listenOptions: stt.SpeechListenOptions(
-          partialResults: true,
-          onDevice: true,
-          cancelOnError: false,
-          listenMode: stt.ListenMode.dictation,
-        ),
-      );
+      _wantListening = true;
+      _accumulated = '';
+      _liveLocale = localeId;
+      _liveOnPartial = onPartial;
+      // iOS Speech.framework auto-stops on ~3 s of silence and after ~30 s
+      // wall-clock regardless of what the user is doing. Pass aggressive
+      // durations AND wire a status listener that re-arms the session as
+      // soon as iOS stops it, so a full lecture's audio actually lands in
+      // the transcript instead of getting clipped on every pause.
+      _native.statusListener = _onNativeStatusChanged;
+      await _startNativeSession();
       return;
     }
-    // Cactus path — caller is responsible for streaming PCM16 audio in via
-    // the factory. We collect it and transcribe at stop time.
     if (cactusAudioStreamFactory == null) {
       throw StateError('Cactus backend needs cactusAudioStreamFactory');
     }
     _pendingAudio = cactusAudioStreamFactory();
+  }
+
+  // Native-backend continuous-listening state.
+  bool _wantListening = false;
+  String _accumulated = '';
+  String _liveLocale = 'en_US';
+  void Function(String)? _liveOnPartial;
+
+  Future<void> _startNativeSession() async {
+    await _native.listen(
+      onResult: (r) {
+        final text = r.recognizedWords;
+        if (r.finalResult) {
+          // Lock this chunk into the accumulator; iOS will spin up the next
+          // session from a fresh recognizer state.
+          if (text.trim().isNotEmpty) {
+            _accumulated = _accumulated.isEmpty ? text : '$_accumulated $text';
+          }
+          _liveOnPartial?.call(_accumulated);
+        } else {
+          // In-flight partial: show accumulated + current guess without
+          // committing it yet.
+          final preview = _accumulated.isEmpty
+              ? text
+              : (text.isEmpty ? _accumulated : '$_accumulated $text');
+          _liveOnPartial?.call(preview);
+        }
+      },
+      localeId: _liveLocale,
+      listenFor: const Duration(hours: 1),
+      pauseFor: const Duration(minutes: 5),
+      listenOptions: stt.SpeechListenOptions(
+        partialResults: true,
+        onDevice: true,
+        cancelOnError: false,
+        listenMode: stt.ListenMode.dictation,
+      ),
+    );
+  }
+
+  void _onNativeStatusChanged(String status) {
+    if (!_wantListening) return;
+    // 'notListening' / 'done' both indicate iOS stopped the session. Restart
+    // immediately so the user's continued speech isn't lost. A small delay
+    // gives the underlying recognizer a beat to release resources.
+    if (status == 'notListening' || status == 'done') {
+      Future.delayed(const Duration(milliseconds: 150), () {
+        if (_wantListening && _backend == SpeechBackend.native) {
+          _startNativeSession().catchError((_) {});
+        }
+      });
+    }
   }
 
   Stream<Uint8List>? _pendingAudio;
@@ -119,8 +170,18 @@ class WhisperService {
   /// Returns the final transcript. Throws if nothing was captured.
   Future<String> stopListening() async {
     if (_backend == SpeechBackend.native) {
+      _wantListening = false;
       if (_native.isListening) await _native.stop();
-      final text = _stripWhisperTokens(_native.lastRecognizedWords).trim();
+      // Splice any in-flight partial that hadn't yet been finalized.
+      final tail = _native.lastRecognizedWords.trim();
+      final combined = (_accumulated.isEmpty
+              ? tail
+              : (tail.isEmpty || _accumulated.endsWith(tail)
+                  ? _accumulated
+                  : '$_accumulated $tail'))
+          .trim();
+      _liveOnPartial = null;
+      final text = _stripWhisperTokens(combined).trim();
       if (text.isEmpty) {
         throw Exception(
             'No speech detected. Try recording closer to the speaker.');
@@ -161,6 +222,8 @@ class WhisperService {
   bool get isListening => _backend == SpeechBackend.native ? _native.isListening : false;
 
   void unload() {
+    _wantListening = false;
+    _liveOnPartial = null;
     if (_native.isListening) _native.stop();
     _cactus?.unload();
     _cactus = null;
