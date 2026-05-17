@@ -1,18 +1,4 @@
-// On-device speech-to-text with two backends and automatic fallback.
-//
-// Preferred: device-native (Apple Speech on iOS, Google SpeechRecognizer on
-// Android). Streaming partials, no model download, hardware-accelerated.
-// On modern phones this is faster and more accurate than any model we
-// could ship.
-//
-// Fallback: Cactus's Whisper for devices without a usable native engine
-// — older Androids without Google STT installed, AOSP forks, etc. Costs
-// ~57MB of one-time download and runs after recording stops (no live
-// captions).
-//
-// The Record screen calls this service through a backend-agnostic API and
-// the live-captioning UI degrades gracefully when only the fallback is
-// available.
+// On-device speech-to-text with native backend (preferred) and Whisper fallback.
 
 import 'dart:async';
 import 'dart:typed_data';
@@ -55,7 +41,6 @@ class WhisperService {
     if (_status == WhisperStatus.ready) return;
     _status = WhisperStatus.downloading;
     try {
-      // Try native first
       final available = await _native.initialize(debugLogging: false);
       if (available) {
         _backend = SpeechBackend.native;
@@ -66,7 +51,6 @@ class WhisperService {
         }
         return;
       }
-      // Native unavailable — fall back to Cactus Whisper
       _statusMessage = 'Native STT unavailable; downloading Whisper fallback…';
       for (final l in _listeners) {
         l(null, _statusMessage!);

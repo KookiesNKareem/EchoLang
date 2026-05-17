@@ -39,11 +39,7 @@ class _LecturesScreenState extends State<LecturesScreen> {
   void initState() {
     super.initState();
     _future = widget.store.list();
-    // Subscribe to in-flight downloads. ensureReady is memoized, so this
-    // attaches a listener to the existing pre-load started in main.dart
-    // rather than kicking off a second one. The .then() rebuilds when the
-    // future completes so the banner re-evaluates _showSetup and the row
-    // for that model disappears.
+    // Subscribe to pre-load progress (memoized, so no duplicate downloads).
     widget.gemma
         .ensureReady(onProgress: (p, status) {
           if (!mounted) return;
@@ -285,8 +281,6 @@ class _LecturesScreenState extends State<LecturesScreen> {
                         ref: lectures[i],
                         onTap: () async {
                           await context.push('/lecture/${Uri.encodeComponent(lectures[i].dir.path)}');
-                          // Re-translate moves the bundle to a new lang-suffixed
-                          // dir, so the list needs to re-scan after viewing.
                           _refresh();
                         },
                         onLongPress: () => _showCardMenu(lectures[i]),

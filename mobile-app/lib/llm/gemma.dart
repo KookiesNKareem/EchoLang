@@ -1,12 +1,4 @@
-// On-device Gemma 4 E2B via flutter_gemma (MediaPipe GenAI / LiteRT).
-//
-// Why flutter_gemma instead of cactus: Cactus 1.3.0's published model
-// catalog tops out at Gemma 3 — their Gemma 4 support is in an internal
-// v1.12 build that hasn't reached pub.dev. The hackathon is *Gemma 4
-// Good Hackathon*, so Gemma 3 disqualifies us. flutter_gemma 0.14.5
-// supports ModelType.gemma4 against the official litert-community
-// Gemma 4 E2B/E4B builds and runs on iOS via MediaPipe GenAI's LiteRT
-// runtime — which also makes us a clean fit for the LiteRT $10k prize.
+// On-device Gemma 4 E2B via flutter_gemma (MediaPipe GenAI / LiteRT with MTP).
 
 import 'dart:convert';
 
@@ -32,17 +24,7 @@ class GemmaBenchResult {
 }
 
 class GemmaService {
-  /// Public, ungated MTP-enabled mirror of Gemma 4 E2B (LiteRT). MTP =
-  /// Multi-Token Prediction (Google blog post 2026-05): a tiny drafter
-  /// model rides along with the main weights and predicts 2-4 future
-  /// tokens at once, then the target verifies them in parallel. ~2x speedup
-  /// on Q&A + study-pack generation, zero accuracy loss because the target
-  /// model still does final verification.
-  ///
-  /// Same file size (~2.58 GB) as the non-MTP variant since the drafter is
-  /// tiny. 64k context is more than enough for our lecture transcripts.
-  /// Plain (non-MTP) fallback if this disappears:
-  /// samirsayyed/gemma-4-E2B-it-litert-lm/resolve/main/gemma-4-E2B-it.litertlm
+  /// MTP-enabled Gemma 4 E2B (Multi-Token Prediction for ~2x speedup).
   static const String modelUrl = String.fromEnvironment(
     'MODEL_URL',
     defaultValue:
