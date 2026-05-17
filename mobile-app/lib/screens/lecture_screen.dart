@@ -25,6 +25,13 @@ class LectureScreen extends StatefulWidget {
 
 class _LectureScreenState extends State<LectureScreen> {
   late Future<Lecture> _future;
+  // Live-translation state: when [_translating] is true the Translation tab
+  // renders [_streamingText] as it grows, instead of (or alongside) the
+  // already-saved translation from disk.
+  bool _translating = false;
+  String _streamingText = '';
+  String? _translatingTo;
+  bool _cancelTranslation = false;
 
   @override
   void initState() {
@@ -38,7 +45,7 @@ class _LectureScreenState extends State<LectureScreen> {
     });
   }
 
-  Future<void> _translate(Lecture lecture) async {
+  Future<void> _translate(Lecture lecture, {VoidCallback? onStart}) async {
     final targetCode = await showModalBottomSheet<String>(
       context: context,
       builder: (sheetCtx) {
@@ -85,72 +92,60 @@ class _LectureScreenState extends State<LectureScreen> {
       return;
     }
 
-    final sourceText = lecture.transcript.map((l) => l.text).join(' ');
-    final buf = StringBuffer();
-    final progress = ValueNotifier<String>('');
-    bool cancelled = false;
-    showDialog<void>(
-      context: context,
-      barrierDismissible: false,
-      builder: (ctx) => AlertDialog(
-        title: Text('Translating to $targetName…'),
-        content: ConstrainedBox(
-          constraints: const BoxConstraints(maxHeight: 280),
-          child: SingleChildScrollView(
-            reverse: true,
-            child: ValueListenableBuilder<String>(
-              valueListenable: progress,
-              builder: (_, v, __) => Text(
-                v.isEmpty ? 'Priming Gemma…' : v,
-                style: const TextStyle(fontSize: 13, height: 1.4),
-              ),
-            ),
-          ),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () {
-              cancelled = true;
-              Navigator.of(ctx).pop();
-            },
-            child: const Text('Cancel'),
-          ),
-        ],
-      ),
-    );
+    setState(() {
+      _translating = true;
+      _streamingText = '';
+      _translatingTo = targetCode;
+      _cancelTranslation = false;
+    });
+    // Let the caller animate to the Translation tab now that the live state
+    // is set up, so the user watches the tokens stream in directly.
+    onStart?.call();
 
+    final sourceText = lecture.transcript.map((l) => l.text).join(' ');
     try {
       await for (final token in widget.gemma.translateStream(
         text: sourceText,
         targetLanguageName: targetName,
       )) {
-        if (cancelled) break;
-        buf.write(token);
-        progress.value = buf.toString();
+        if (_cancelTranslation || !mounted) break;
+        setState(() => _streamingText += token);
       }
-      if (cancelled || !mounted) {
-        if (mounted) Navigator.of(context).pop();
+      if (_cancelTranslation || !mounted) {
+        if (mounted) {
+          setState(() {
+            _translating = false;
+            _streamingText = '';
+            _translatingTo = null;
+          });
+        }
         return;
       }
       await widget.store.saveTranslation(
         dir: Directory(widget.dirPath),
-        text: buf.toString().trim(),
+        text: _streamingText.trim(),
       );
-      // Also persist the target lang on the manifest so the language chip
-      // and RTL detection in the viewer pick it up.
       await widget.store.renameLectureLang(
         dir: Directory(widget.dirPath),
         lang: targetCode,
       );
       if (!mounted) return;
-      Navigator.of(context).pop(); // close progress dialog
+      setState(() {
+        _translating = false;
+        _streamingText = '';
+        _translatingTo = null;
+      });
       _reload();
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text('Translated to $targetName')),
       );
     } catch (e) {
       if (!mounted) return;
-      Navigator.of(context).pop();
+      setState(() {
+        _translating = false;
+        _streamingText = '';
+        _translatingTo = null;
+      });
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text('Translation failed: $e')),
       );
@@ -173,18 +168,18 @@ class _LectureScreenState extends State<LectureScreen> {
         }
         final lecture = snap.data!;
         final hasPack = lecture.studyPack != null;
-        final hasTranslation = lecture.translation.isNotEmpty;
         final tabs = <_TabSpec>[
           if (hasPack) const _TabSpec('Study pack', Icons.auto_stories_rounded),
-          if (hasTranslation) const _TabSpec('Translation', Icons.translate_rounded),
+          const _TabSpec('Translation', Icons.translate_rounded),
           const _TabSpec('Original', Icons.subject_rounded),
         ];
+        final translationIdx = tabs.indexWhere((t) => t.label == 'Translation');
         return DefaultTabController(
           length: tabs.length,
           child: Scaffold(
             body: NestedScrollView(
               headerSliverBuilder: (_, __) => [
-                _buildHeader(context, lecture),
+                _buildHeader(context, lecture, translationIdx),
                 SliverPersistentHeader(
                   pinned: true,
                   delegate: _TabBarDelegate(
@@ -202,9 +197,11 @@ class _LectureScreenState extends State<LectureScreen> {
                     case 'Study pack':
                       return _StudyPackTab(lecture: lecture);
                     case 'Translation':
-                      return _TranscriptTab(
-                        lines: lecture.translation,
-                        isRtl: rtlLangs.contains(lecture.manifest.lang),
+                      return _TranslationTab(
+                        lecture: lecture,
+                        translating: _translating,
+                        streamingText: _streamingText,
+                        targetLangCode: _translatingTo,
                       );
                     case 'Original':
                     default:
@@ -224,7 +221,7 @@ class _LectureScreenState extends State<LectureScreen> {
     );
   }
 
-  Widget _buildHeader(BuildContext context, Lecture lecture) {
+  Widget _buildHeader(BuildContext context, Lecture lecture, int translationIdx) {
     final cs = Theme.of(context).colorScheme;
     final m = lecture.manifest;
     final duration = m.endedAt.difference(m.startedAt);
@@ -237,10 +234,28 @@ class _LectureScreenState extends State<LectureScreen> {
         onPressed: () => context.pop(),
       ),
       actions: [
-        IconButton(
-          tooltip: 'Translate',
-          icon: const Icon(Icons.translate_rounded),
-          onPressed: () => _translate(lecture),
+        // Builder so onPressed gets a context inside DefaultTabController and
+        // can animate to the Translation tab the instant translation starts.
+        Builder(
+          builder: (innerCtx) => IconButton(
+            tooltip: 'Translate',
+            icon: _translating
+                ? const SizedBox(
+                    width: 20, height: 20,
+                    child: CircularProgressIndicator(strokeWidth: 2.2),
+                  )
+                : const Icon(Icons.translate_rounded),
+            onPressed: _translating
+                ? null
+                : () => _translate(
+                      lecture,
+                      onStart: () {
+                        if (translationIdx >= 0) {
+                          DefaultTabController.of(innerCtx).animateTo(translationIdx);
+                        }
+                      },
+                    ),
+          ),
         ),
       ],
       flexibleSpace: FlexibleSpaceBar(
@@ -624,6 +639,98 @@ class _TranscriptTab extends StatelessWidget {
           ],
         );
       },
+    );
+  }
+}
+
+/// Translation tab. Three states:
+///   1. Live streaming from on-device Gemma — renders [streamingText] +
+///      a typing indicator. The user watches the tokens land in real time.
+///   2. Saved translation on disk — defers to [_TranscriptTab].
+///   3. Empty — shows a hint to tap the translate icon.
+class _TranslationTab extends StatelessWidget {
+  final Lecture lecture;
+  final bool translating;
+  final String streamingText;
+  final String? targetLangCode;
+  const _TranslationTab({
+    required this.lecture,
+    required this.translating,
+    required this.streamingText,
+    required this.targetLangCode,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    if (translating) {
+      final langName = langNames[targetLangCode] ?? targetLangCode ?? '';
+      final isRtl = rtlLangs.contains(targetLangCode);
+      return ListView(
+        padding: const EdgeInsets.fromLTRB(20, 20, 20, 100),
+        children: [
+          Row(
+            children: [
+              const SizedBox(
+                width: 16, height: 16,
+                child: CircularProgressIndicator(strokeWidth: 2),
+              ),
+              const SizedBox(width: 10),
+              Text(
+                'Translating to $langName…',
+                style: TextStyle(
+                  fontSize: 13,
+                  color: Colors.white.withValues(alpha: 0.65),
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 20),
+          Text(
+            streamingText.isEmpty ? 'Priming Gemma…' : streamingText,
+            textDirection: isRtl ? TextDirection.rtl : TextDirection.ltr,
+            textAlign: isRtl ? TextAlign.end : TextAlign.start,
+            style: const TextStyle(fontSize: 15, height: 1.55),
+          ),
+        ],
+      );
+    }
+    if (lecture.translation.isEmpty) {
+      return Center(
+        child: Padding(
+          padding: const EdgeInsets.all(32),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Icon(Icons.translate_rounded,
+                  size: 36, color: Colors.white.withValues(alpha: 0.3)),
+              const SizedBox(height: 14),
+              Text(
+                'No translation yet.',
+                textAlign: TextAlign.center,
+                style: TextStyle(
+                  fontSize: 15, fontWeight: FontWeight.w600,
+                  color: Colors.white.withValues(alpha: 0.85),
+                ),
+              ),
+              const SizedBox(height: 6),
+              Text(
+                'Tap the translate icon in the top bar to translate this '
+                'lecture into another language — Gemma runs the translation '
+                'right here on your phone.',
+                textAlign: TextAlign.center,
+                style: TextStyle(
+                  fontSize: 13, height: 1.45,
+                  color: Colors.white.withValues(alpha: 0.55),
+                ),
+              ),
+            ],
+          ),
+        ),
+      );
+    }
+    return _TranscriptTab(
+      lines: lecture.translation,
+      isRtl: rtlLangs.contains(lecture.manifest.lang),
     );
   }
 }
