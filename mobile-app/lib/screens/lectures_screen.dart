@@ -277,7 +277,7 @@ class _LecturesScreenState extends State<LecturesScreen> {
                           await context.push('/lecture/${Uri.encodeComponent(lectures[i].dir.path)}');
                           _refresh();
                         },
-                        onLongPress: () => _showCardMenu(lectures[i]),
+                        onMore: () => _showCardMenu(lectures[i]),
                       ),
                     ),
                   ),
@@ -389,34 +389,44 @@ class _PrivacyChip extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     const accent = Color(0xFF7AE0A0);
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 4),
-      decoration: BoxDecoration(
-        color: accent.withValues(alpha: 0.10),
+    return Material(
+      color: Colors.transparent,
+      child: InkWell(
         borderRadius: BorderRadius.circular(999),
-        border: Border.all(color: accent.withValues(alpha: 0.25)),
-      ),
-      child: Row(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          Container(
-            width: 6, height: 6,
-            decoration: const BoxDecoration(
-              shape: BoxShape.circle,
-              color: accent,
-            ),
+        onTap: () {
+          HapticFeedback.selectionClick();
+          ModelInfoSheet.show(context);
+        },
+        child: Container(
+          padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 4),
+          decoration: BoxDecoration(
+            color: accent.withValues(alpha: 0.10),
+            borderRadius: BorderRadius.circular(999),
+            border: Border.all(color: accent.withValues(alpha: 0.25)),
           ),
-          const SizedBox(width: 6),
-          Text(
-            'Offline · On-device',
-            style: TextStyle(
-              fontSize: 10,
-              fontWeight: FontWeight.w600,
-              color: accent.withValues(alpha: 0.92),
-              letterSpacing: 0.3,
-            ),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Container(
+                width: 6, height: 6,
+                decoration: const BoxDecoration(
+                  shape: BoxShape.circle,
+                  color: accent,
+                ),
+              ),
+              const SizedBox(width: 6),
+              Text(
+                'Offline · On-device',
+                style: TextStyle(
+                  fontSize: 10,
+                  fontWeight: FontWeight.w600,
+                  color: accent.withValues(alpha: 0.92),
+                  letterSpacing: 0.3,
+                ),
+              ),
+            ],
           ),
-        ],
+        ),
       ),
     );
   }
@@ -530,8 +540,8 @@ class _EmptyStateState extends State<_EmptyState> with SingleTickerProviderState
 class _LectureCard extends StatelessWidget {
   final LectureRef ref;
   final VoidCallback onTap;
-  final VoidCallback? onLongPress;
-  const _LectureCard({required this.ref, required this.onTap, this.onLongPress});
+  final VoidCallback? onMore;
+  const _LectureCard({required this.ref, required this.onTap, this.onMore});
 
   @override
   Widget build(BuildContext context) {
@@ -540,10 +550,10 @@ class _LectureCard extends StatelessWidget {
     return Card(
       child: InkWell(
         onTap: onTap,
-        onLongPress: onLongPress,
+        onLongPress: onMore,
         borderRadius: BorderRadius.circular(16),
         child: Padding(
-          padding: const EdgeInsets.all(16),
+          padding: const EdgeInsets.fromLTRB(16, 16, 4, 16),
           child: Row(
             children: [
               Container(
@@ -572,25 +582,42 @@ class _LectureCard extends StatelessWidget {
                       children: [
                         _Pill(text: manifest.lang.toUpperCase()),
                         const SizedBox(width: 6),
-                        Text(
-                          '${manifest.captionCount} caption${manifest.captionCount == 1 ? "" : "s"}',
-                          style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                                color: Colors.white.withValues(alpha: 0.5),
-                              ),
+                        Flexible(
+                          child: Text(
+                            '${manifest.captionCount} caption${manifest.captionCount == 1 ? "" : "s"} · ${_fmtRelative(manifest.startedAt)}',
+                            maxLines: 1, overflow: TextOverflow.ellipsis,
+                            style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                                  color: Colors.white.withValues(alpha: 0.5),
+                                ),
+                          ),
                         ),
                       ],
                     ),
                   ],
                 ),
               ),
-              Icon(Icons.chevron_right_rounded,
-                  color: Colors.white.withValues(alpha: 0.3)),
+              IconButton(
+                tooltip: 'More',
+                icon: const Icon(Icons.more_vert_rounded),
+                onPressed: onMore,
+                color: Colors.white.withValues(alpha: 0.6),
+              ),
             ],
           ),
         ),
       ),
     );
   }
+}
+
+String _fmtRelative(DateTime t) {
+  final now = DateTime.now();
+  final diff = now.difference(t);
+  if (diff.inMinutes < 1) return 'just now';
+  if (diff.inHours < 1) return '${diff.inMinutes} min ago';
+  if (diff.inDays < 1) return '${diff.inHours} hr ago';
+  if (diff.inDays < 7) return '${diff.inDays} day${diff.inDays == 1 ? '' : 's'} ago';
+  return '${(diff.inDays / 7).floor()} wk ago';
 }
 
 class _SetupBanner extends StatelessWidget {
