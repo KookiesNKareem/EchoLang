@@ -228,6 +228,10 @@ class WhisperService {
     _cactus?.unload();
     _cactus = null;
     _status = WhisperStatus.notReady;
+    // Clear the cached ready-future so the next ensureReady() actually
+    // re-runs _load(). Otherwise the stale-cached completed future returns
+    // immediately and startListening then throws "not ready".
+    _readyFuture = null;
   }
 
   static Future<List<int>> _collectStream(Stream<Uint8List> s) async {

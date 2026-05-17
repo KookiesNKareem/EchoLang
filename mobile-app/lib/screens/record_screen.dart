@@ -55,7 +55,13 @@ class _RecordScreenState extends State<RecordScreen> with SingleTickerProviderSt
   void dispose() {
     _pulse.dispose();
     _timer?.cancel();
-    widget.whisper.unload();
+    // Stop any in-flight listening session but DO NOT tear down the whisper
+    // service — it's app-scoped and unloading it here forces a full re-init
+    // (and re-permission) on the next visit, which fails with "not ready"
+    // because of the cached ready-future.
+    if (widget.whisper.isListening) {
+      widget.whisper.stopListening().catchError((_) => '');
+    }
     _titleCtrl.dispose();
     super.dispose();
   }
