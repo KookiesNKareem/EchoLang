@@ -18,20 +18,43 @@
 
 ## Architecture
 
+EchoLang has two independent flows that converge on the same lecture viewer:
+the **classroom flow** (teacher + Pi + many students) and the **standalone
+flow** (just the phone, no Pi anywhere — works on an airplane).
+
 ```mermaid
 flowchart LR
     mic([USB mic]) --> whisper[whisper.cpp<br/>tiny.en]
     whisper --> gemma_pi[Gemma 4 E2B<br/>via Ollama]
     gemma_pi -->|SSE| pwa[Student PWA<br/>live captions]
     gemma_pi -->|end of class| bundle[Study bundle<br/>transcript + translations + study pack]
-    bundle --> phone[iOS / Android app<br/>Gemma 4 E2B LiteRT MTP]
-    phone --> qa([Offline Q&A])
+    bundle --> lecture
 
-    subgraph pi [Raspberry Pi 5]
+    builtin([Seeded sample lecture<br/>or on-device recording]) --> lecture
+    lecture[Lecture viewer<br/>iOS / Android app]
+    lecture --> translate[On-device translation<br/>27 languages, streams live]
+    lecture --> qa[On-device Q&A<br/>primed chat, ~85 ms first token]
+    lecture --> starters[Localized hint + 3 suggested questions<br/>generated in lecture's language]
+
+    subgraph classroom [Classroom flow — Raspberry Pi 5]
         whisper
         gemma_pi
+        pwa
+        bundle
+    end
+
+    subgraph phone [Standalone flow — Gemma 4 E2B LiteRT MTP on device]
+        builtin
+        lecture
+        translate
+        qa
+        starters
     end
 ```
+
+Every box inside the **phone** subgraph runs entirely on-device. No
+network, no cloud, no accounts — the app is fully usable without ever
+talking to a Pi.
 
 ## Repository layout
 
