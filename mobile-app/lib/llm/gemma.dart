@@ -138,12 +138,15 @@ class GemmaService {
       for (final l in _listeners) {
         l(null, _statusMessage!);
       }
-      // 8192 covers a full lecture-translation prefill (~1500 tok transcript
-      // + preamble) plus a ~6000-char output without bumping into the
-      // context cap. The .litertlm we ship is built for 64k, so this is well
-      // within the model's headroom.
+      // 4096 is the sweet spot: large enough to cover transcript (~1500 tok)
+      // + translation output (~1500 tok) with headroom for Q&A turns, small
+      // enough that the KV-cache allocation doesn't trip iOS jetsam on
+      // 4–6 GB phones. The .litertlm itself is built for 64k context, but
+      // sizing maxTokens for the host device's RAM budget matters more than
+      // theoretical model capacity. Going higher (we tried 8192) crashed
+      // the app on lower-RAM devices.
       _model = await FlutterGemma.getActiveModel(
-        maxTokens: 8192,
+        maxTokens: 4096,
         preferredBackend: PreferredBackend.gpu,
       );
       _chat = await _model!.createChat();
