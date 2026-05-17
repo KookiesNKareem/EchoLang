@@ -1,4 +1,4 @@
-package dev.locallearning.locallearning
+package dev.echolearn
 
 import io.flutter.embedding.android.FlutterActivity
 
