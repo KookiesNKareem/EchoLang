@@ -135,10 +135,35 @@ class BundleStore {
     await sentinel.writeAsString('1');
   }
 
+  /// Persist an on-device translation in the same on-disk format the Pi
+  /// produces, so the lecture viewer's Translation tab renders it without
+  /// any code-path branching. Segments the text on sentence boundaries and
+  /// stamps each line with a synthetic timecode 4s apart, matching the Pi
+  /// translation timing convention.
+  Future<void> saveTranslation({
+    required Directory dir,
+    required String text,
+  }) async {
+    final startedAt = DateTime.now().toUtc();
+    final lines = _segmentTranscript(text, startedAt);
+    final formatted = lines.asMap().entries.map((e) {
+      final ts = _hms(startedAt.add(Duration(seconds: e.key * 4)));
+      return '[$ts] (#${e.key}) ${e.value}';
+    }).join('\n');
+    await File('${dir.path}/translation.txt').writeAsString('$formatted\n');
+  }
+
   Future<void> renameLecture({required Directory dir, required String title}) async {
     final manifestFile = File('${dir.path}/manifest.json');
     final raw = jsonDecode(await manifestFile.readAsString()) as Map<String, dynamic>;
     raw['title'] = title;
+    await manifestFile.writeAsString(const JsonEncoder.withIndent('  ').convert(raw));
+  }
+
+  Future<void> renameLectureLang({required Directory dir, required String lang}) async {
+    final manifestFile = File('${dir.path}/manifest.json');
+    final raw = jsonDecode(await manifestFile.readAsString()) as Map<String, dynamic>;
+    raw['lang'] = lang;
     await manifestFile.writeAsString(const JsonEncoder.withIndent('  ').convert(raw));
   }
 

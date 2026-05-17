@@ -257,6 +257,35 @@ class GemmaService {
     );
   }
 
+  /// On-device translation. Streams the translated text token-by-token.
+  /// Runs in a fresh chat session so it doesn't clobber the primed Q&A chat
+  /// for whichever lecture is currently open.
+  Stream<String> translateStream({
+    required String text,
+    required String targetLanguageName,
+  }) async* {
+    if (_status != GemmaStatus.ready || _model == null) {
+      throw StateError('Gemma not ready (status=$_status)');
+    }
+    final prompt =
+        'Translate the following English text into $targetLanguageName. '
+        'Preserve sentence boundaries and paragraph breaks. Output ONLY the '
+        'translated text — no preface, no commentary, no "Sure, here is...".'
+        '\n\nEnglish:\n$text\n\n$targetLanguageName:';
+    final chat = await _model!.createChat();
+    await chat.addQueryChunk(Message.text(text: prompt, isUser: true));
+    await for (final chunk in chat.generateChatResponseAsync()) {
+      switch (chunk) {
+        case TextResponse(:final token):
+          yield token;
+        case ThinkingResponse(:final content):
+          yield content;
+        default:
+          break;
+      }
+    }
+  }
+
   Future<StudyPack> generateStudyPack({required String transcript, String lang = 'en'}) async {
     if (_status != GemmaStatus.ready || _model == null) {
       throw StateError('Gemma not ready (status=$_status)');

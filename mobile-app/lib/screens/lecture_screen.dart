@@ -5,11 +5,19 @@ import 'package:go_router/go_router.dart';
 
 import '../data/bundle_store.dart';
 import '../data/models.dart';
+import '../data/preferences.dart';
+import '../llm/gemma.dart';
 
 class LectureScreen extends StatefulWidget {
   final BundleStore store;
+  final GemmaService gemma;
   final String dirPath;
-  const LectureScreen({super.key, required this.store, required this.dirPath});
+  const LectureScreen({
+    super.key,
+    required this.store,
+    required this.gemma,
+    required this.dirPath,
+  });
 
   @override
   State<LectureScreen> createState() => _LectureScreenState();
@@ -22,6 +30,131 @@ class _LectureScreenState extends State<LectureScreen> {
   void initState() {
     super.initState();
     _future = widget.store.load(Directory(widget.dirPath));
+  }
+
+  void _reload() {
+    setState(() {
+      _future = widget.store.load(Directory(widget.dirPath));
+    });
+  }
+
+  Future<void> _translate(Lecture lecture) async {
+    final targetCode = await showModalBottomSheet<String>(
+      context: context,
+      builder: (sheetCtx) {
+        final cs = Theme.of(sheetCtx).colorScheme;
+        return SafeArea(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Padding(
+                padding: const EdgeInsets.fromLTRB(20, 16, 20, 8),
+                child: Row(
+                  children: [
+                    Icon(Icons.translate_rounded, color: cs.primary, size: 22),
+                    const SizedBox(width: 10),
+                    const Text('Translate this lecture',
+                        style: TextStyle(fontSize: 17, fontWeight: FontWeight.w600)),
+                  ],
+                ),
+              ),
+              ...langNames.entries
+                  .where((e) => e.key != 'en')
+                  .map((e) => ListTile(
+                        title: Text(e.value),
+                        trailing: Text(e.key.toUpperCase(),
+                            style: TextStyle(
+                              fontSize: 12,
+                              color: Colors.white.withValues(alpha: 0.4),
+                            )),
+                        onTap: () => Navigator.of(sheetCtx).pop(e.key),
+                      )),
+              const SizedBox(height: 8),
+            ],
+          ),
+        );
+      },
+    );
+    if (targetCode == null || !mounted) return;
+    final targetName = langNames[targetCode] ?? targetCode;
+
+    if (widget.gemma.status != GemmaStatus.ready) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Gemma is still loading — try again in a moment.')),
+      );
+      return;
+    }
+
+    final sourceText = lecture.transcript.map((l) => l.text).join(' ');
+    final buf = StringBuffer();
+    final progress = ValueNotifier<String>('');
+    bool cancelled = false;
+    showDialog<void>(
+      context: context,
+      barrierDismissible: false,
+      builder: (ctx) => AlertDialog(
+        title: Text('Translating to $targetName…'),
+        content: ConstrainedBox(
+          constraints: const BoxConstraints(maxHeight: 280),
+          child: SingleChildScrollView(
+            reverse: true,
+            child: ValueListenableBuilder<String>(
+              valueListenable: progress,
+              builder: (_, v, __) => Text(
+                v.isEmpty ? 'Priming Gemma…' : v,
+                style: const TextStyle(fontSize: 13, height: 1.4),
+              ),
+            ),
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () {
+              cancelled = true;
+              Navigator.of(ctx).pop();
+            },
+            child: const Text('Cancel'),
+          ),
+        ],
+      ),
+    );
+
+    try {
+      await for (final token in widget.gemma.translateStream(
+        text: sourceText,
+        targetLanguageName: targetName,
+      )) {
+        if (cancelled) break;
+        buf.write(token);
+        progress.value = buf.toString();
+      }
+      if (cancelled || !mounted) {
+        if (mounted) Navigator.of(context).pop();
+        return;
+      }
+      await widget.store.saveTranslation(
+        dir: Directory(widget.dirPath),
+        text: buf.toString().trim(),
+      );
+      // Also persist the target lang on the manifest so the language chip
+      // and RTL detection in the viewer pick it up.
+      await widget.store.renameLectureLang(
+        dir: Directory(widget.dirPath),
+        lang: targetCode,
+      );
+      if (!mounted) return;
+      Navigator.of(context).pop(); // close progress dialog
+      _reload();
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Translated to $targetName')),
+      );
+    } catch (e) {
+      if (!mounted) return;
+      Navigator.of(context).pop();
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Translation failed: $e')),
+      );
+    }
   }
 
   @override
@@ -103,6 +236,13 @@ class _LectureScreenState extends State<LectureScreen> {
         icon: const Icon(Icons.arrow_back_rounded),
         onPressed: () => context.pop(),
       ),
+      actions: [
+        IconButton(
+          tooltip: 'Translate',
+          icon: const Icon(Icons.translate_rounded),
+          onPressed: () => _translate(lecture),
+        ),
+      ],
       flexibleSpace: FlexibleSpaceBar(
         titlePadding: const EdgeInsets.fromLTRB(56, 0, 56, 16),
         title: Text(
