@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:io';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 
 import '../data/bundle_store.dart';
 import '../data/models.dart';
@@ -137,6 +138,7 @@ class _QAScreenState extends State<QAScreen> with SingleTickerProviderStateMixin
       );
       return;
     }
+    HapticFeedback.lightImpact();
     setState(() {
       _input.clear();
       _messages.add(_ChatMessage(fromUser: true, text: q));
@@ -189,6 +191,7 @@ class _QAScreenState extends State<QAScreen> with SingleTickerProviderStateMixin
 
   void _stop() {
     if (!_generating) return;
+    HapticFeedback.mediumImpact();
     setState(() => _cancelGeneration = true);
   }
 
@@ -241,10 +244,7 @@ class _QAScreenState extends State<QAScreen> with SingleTickerProviderStateMixin
         children: [
           Expanded(
             child: _messages.isEmpty
-                ? _Welcome(
-                    pack: _lecture?.studyPack,
-                    onPick: (q) => _send(q),
-                  )
+                ? const _Welcome()
                 : ListView.builder(
                     controller: _scroll,
                     padding: const EdgeInsets.fromLTRB(16, 16, 16, 8),
@@ -285,14 +285,11 @@ class _QAScreenState extends State<QAScreen> with SingleTickerProviderStateMixin
 }
 
 class _Welcome extends StatelessWidget {
-  final StudyPack? pack;
-  final void Function(String) onPick;
-  const _Welcome({required this.pack, required this.onPick});
+  const _Welcome();
 
   @override
   Widget build(BuildContext context) {
     final cs = Theme.of(context).colorScheme;
-    final qs = pack?.practiceQuestions ?? const [];
     return ListView(
       padding: const EdgeInsets.fromLTRB(20, 28, 20, 24),
       children: [
@@ -315,60 +312,12 @@ class _Welcome extends StatelessWidget {
             style: Theme.of(context).textTheme.titleLarge),
         const SizedBox(height: 6),
         Text(
-          'Gemma 4 runs on this phone. Nothing leaves your device — '
-          'works on the bus, on a plane, with no signal.',
+          'Gemma 4 runs on this phone. Nothing leaves your device — works anywhere.',
           style: Theme.of(context).textTheme.bodyMedium?.copyWith(
                 color: Colors.white.withValues(alpha: 0.6),
               ),
         ),
-        if (qs.isNotEmpty) ...[
-          const SizedBox(height: 28),
-          Text('Try one of these',
-              style: Theme.of(context).textTheme.labelLarge?.copyWith(
-                    color: Colors.white.withValues(alpha: 0.7),
-                  )),
-          const SizedBox(height: 10),
-          ...qs.take(4).map((q) => _SuggestionTile(text: q, onTap: () => onPick(q))),
-        ],
       ],
-    );
-  }
-}
-
-class _SuggestionTile extends StatelessWidget {
-  final String text;
-  final VoidCallback onTap;
-  const _SuggestionTile({required this.text, required this.onTap});
-
-  @override
-  Widget build(BuildContext context) {
-    final cs = Theme.of(context).colorScheme;
-    return Padding(
-      padding: const EdgeInsets.only(bottom: 8),
-      child: Material(
-        color: Colors.transparent,
-        child: InkWell(
-          onTap: onTap,
-          borderRadius: BorderRadius.circular(14),
-          child: Container(
-            padding: const EdgeInsets.all(14),
-            decoration: BoxDecoration(
-              color: cs.surfaceContainerHighest.withValues(alpha: 0.5),
-              borderRadius: BorderRadius.circular(14),
-              border: Border.all(color: Colors.white.withValues(alpha: 0.06)),
-            ),
-            child: Row(
-              children: [
-                Icon(Icons.help_outline_rounded, size: 18, color: cs.primary),
-                const SizedBox(width: 10),
-                Expanded(child: Text(text, style: const TextStyle(height: 1.35))),
-                Icon(Icons.chevron_right_rounded,
-                    color: Colors.white.withValues(alpha: 0.3), size: 18),
-              ],
-            ),
-          ),
-        ),
-      ),
     );
   }
 }
@@ -789,7 +738,10 @@ class _SuggestionRow extends StatelessWidget {
             ),
             child: InkWell(
               borderRadius: BorderRadius.circular(20),
-              onTap: () => onPick(q),
+              onTap: () {
+                HapticFeedback.selectionClick();
+                onPick(q);
+              },
               child: Padding(
                 padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
                 child: Row(
