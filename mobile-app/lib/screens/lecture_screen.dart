@@ -25,7 +25,12 @@ class LectureScreen extends StatefulWidget {
 }
 
 class _LectureScreenState extends State<LectureScreen> {
-  late Future<Lecture> _future;
+  // Lecture data lives in state directly (not via FutureBuilder) so reloads
+  // don't tear down the DefaultTabController. Tearing it down on every
+  // reload causes the tab index to snap back to 0 and the user momentarily
+  // sees stale content under the wrong tab.
+  Lecture? _lecture;
+  Object? _loadError;
   bool _translating = false;
   String _streamingText = '';
   String? _translatingTo;
@@ -36,13 +41,29 @@ class _LectureScreenState extends State<LectureScreen> {
   @override
   void initState() {
     super.initState();
-    _future = widget.store.load(Directory(widget.dirPath))..then(_prewarm);
+    _load(prewarm: true);
   }
 
+  Future<void> _load({bool prewarm = false}) async {
+    try {
+      final l = await widget.store.load(Directory(widget.dirPath));
+      if (!mounted) return;
+      setState(() {
+        _lecture = l;
+        _loadError = null;
+      });
+      if (prewarm) _prewarm(l);
+    } catch (e) {
+      if (!mounted) return;
+      setState(() => _loadError = e);
+    }
+  }
+
+  /// Reload the lecture from disk without disturbing tab state. Used after
+  /// translation / study-pack regeneration to pick up the freshly-saved
+  /// content.
   void _reload() {
-    setState(() {
-      _future = widget.store.load(Directory(widget.dirPath))..then(_prewarm);
-    });
+    _load();
   }
 
   /// Stream a fresh study pack into the Study Pack tab in [langName],
@@ -79,14 +100,17 @@ class _LectureScreenState extends State<LectureScreen> {
     } catch (_) {
       // Silent: the translate snackbar already fired; partial pack stays
       // visible so the user can still see what landed.
-    } finally {
-      if (mounted) {
-        setState(() {
-          _packStreaming = false;
-        });
-        _reload();
-      }
     }
+    if (!mounted) return;
+    // Reload first so the freshly-saved pack lands in [_lecture] before we
+    // flip the streaming flag. Otherwise the Study Pack tab flashes back to
+    // the old saved pack between the flag flip and the reload.
+    await _load();
+    if (!mounted) return;
+    setState(() {
+      _packStreaming = false;
+      _partialPack = null;
+    });
   }
 
   void _prewarm(Lecture lecture) {
@@ -195,30 +219,27 @@ class _LectureScreenState extends State<LectureScreen> {
 
   @override
   Widget build(BuildContext context) {
-    return FutureBuilder<Lecture>(
-      future: _future,
-      builder: (context, snap) {
-        if (snap.connectionState != ConnectionState.done) {
-          return const Scaffold(body: Center(child: CircularProgressIndicator()));
-        }
-        if (snap.hasError) {
-          return Scaffold(
-            appBar: AppBar(),
-            body: Center(child: Text('Failed to load: ${snap.error}')),
-          );
-        }
-        final lecture = snap.data!;
-        final hasPack = lecture.studyPack != null;
-        final showPackTab = hasPack || _packStreaming;
-        final tabs = <_TabSpec>[
-          if (showPackTab) const _TabSpec('Study pack', Icons.auto_stories_rounded),
-          const _TabSpec('Translation', Icons.translate_rounded),
-          const _TabSpec('Original', Icons.subject_rounded),
-        ];
-        final translationIdx = tabs.indexWhere((t) => t.label == 'Translation');
-        return DefaultTabController(
-          length: tabs.length,
-          child: Scaffold(
+    if (_loadError != null) {
+      return Scaffold(
+        appBar: AppBar(),
+        body: Center(child: Text('Failed to load: $_loadError')),
+      );
+    }
+    final lecture = _lecture;
+    if (lecture == null) {
+      return const Scaffold(body: Center(child: CircularProgressIndicator()));
+    }
+    final hasPack = lecture.studyPack != null;
+    final showPackTab = hasPack || _packStreaming;
+    final tabs = <_TabSpec>[
+      if (showPackTab) const _TabSpec('Study pack', Icons.auto_stories_rounded),
+      const _TabSpec('Translation', Icons.translate_rounded),
+      const _TabSpec('Original', Icons.subject_rounded),
+    ];
+    final translationIdx = tabs.indexWhere((t) => t.label == 'Translation');
+    return DefaultTabController(
+      length: tabs.length,
+      child: Scaffold(
             body: NestedScrollView(
               headerSliverBuilder: (_, __) => [
                 _buildHeader(context, lecture, translationIdx),
@@ -256,14 +277,12 @@ class _LectureScreenState extends State<LectureScreen> {
                 }).toList(),
               ),
             ),
-            floatingActionButton: FloatingActionButton.extended(
-              onPressed: () => context.push('/qa/${Uri.encodeComponent(widget.dirPath)}'),
-              icon: const Icon(Icons.auto_awesome_rounded),
-              label: const Text('Ask Gemma'),
-            ),
-          ),
-        );
-      },
+        floatingActionButton: FloatingActionButton.extended(
+          onPressed: () => context.push('/qa/${Uri.encodeComponent(widget.dirPath)}'),
+          icon: const Icon(Icons.auto_awesome_rounded),
+          label: const Text('Ask Gemma'),
+        ),
+      ),
     );
   }
 
