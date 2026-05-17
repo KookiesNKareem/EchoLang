@@ -477,9 +477,12 @@ class _Composer extends StatelessWidget {
                   enabled: enabled,
                   decoration: const InputDecoration(
                     hintText: 'Ask Gemma about this lecture…',
+                    filled: false,
+                    fillColor: Colors.transparent,
                     border: InputBorder.none,
                     enabledBorder: InputBorder.none,
                     focusedBorder: InputBorder.none,
+                    disabledBorder: InputBorder.none,
                     contentPadding: EdgeInsets.symmetric(vertical: 14),
                     isDense: true,
                   ),
