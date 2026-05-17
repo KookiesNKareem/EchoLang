@@ -26,6 +26,8 @@ class QAScreen extends StatefulWidget {
 class _ChatMessage {
   final bool fromUser;
   String text;
+  String thinking = '';
+  final List<Citation> citations = <Citation>[];
   _ChatMessage({required this.fromUser, required this.text});
 }
 
@@ -36,6 +38,7 @@ class _QAScreenState extends State<QAScreen> with SingleTickerProviderStateMixin
   final ScrollController _scroll = ScrollController();
   late final AnimationController _typingDots;
   bool _generating = false;
+  bool _cancelGeneration = false;
   String? _modelStatus;
   QAStarters? _starters;
   bool _startersLoading = false;
@@ -139,26 +142,54 @@ class _QAScreenState extends State<QAScreen> with SingleTickerProviderStateMixin
       _messages.add(_ChatMessage(fromUser: true, text: q));
       _messages.add(_ChatMessage(fromUser: false, text: ''));
       _generating = true;
+      _cancelGeneration = false;
     });
     _scrollToBottom();
     try {
-      final ctx = _lecture!.transcript.map((l) => l.text).join(' ');
       final buf = StringBuffer();
-      await for (final token in widget.gemma.askStream(lectureContext: ctx, question: q)) {
+      final stream = widget.gemma.askWithToolsStream(
+        transcript: _lecture!.transcript,
+        keyTerms: _lecture!.studyPack?.keyTerms ?? const [],
+        question: q,
+      );
+      await for (final ev in stream) {
         if (!mounted) return;
-        buf.write(token);
-        setState(() => _messages.last.text = buf.toString());
+        if (_cancelGeneration) {
+          if (buf.isEmpty) buf.write('(stopped)');
+          break;
+        }
+        switch (ev) {
+          case AskText(:final token):
+            buf.write(token);
+            setState(() => _messages.last.text = buf.toString());
+          case AskCitation(:final citation):
+            setState(() => _messages.last.citations.add(citation));
+          case AskThinking(:final content):
+            setState(() => _messages.last.thinking += content);
+        }
         _scrollToBottom();
       }
       if (!mounted) return;
-      setState(() => _generating = false);
+      setState(() {
+        if (_cancelGeneration && _messages.last.text.isEmpty) {
+          _messages.last.text = '(stopped)';
+        }
+        _generating = false;
+        _cancelGeneration = false;
+      });
     } catch (e) {
       if (!mounted) return;
       setState(() {
         _messages.last.text = 'Error: $e';
         _generating = false;
+        _cancelGeneration = false;
       });
     }
+  }
+
+  void _stop() {
+    if (!_generating) return;
+    setState(() => _cancelGeneration = true);
   }
 
   void _scrollToBottom() {
@@ -242,8 +273,10 @@ class _QAScreenState extends State<QAScreen> with SingleTickerProviderStateMixin
           _Composer(
             controller: _input,
             enabled: !_generating && widget.gemma.status == GemmaStatus.ready,
+            generating: _generating,
             hintText: _starters?.hint,
             onSubmit: () => _send(),
+            onStop: _stop,
           ),
         ],
       ),
@@ -409,6 +442,13 @@ class _BubbleState extends State<_Bubble> with SingleTickerProviderStateMixin {
                     ),
                   ),
                 ),
+              if (!m.fromUser && m.thinking.trim().isNotEmpty)
+                ConstrainedBox(
+                  constraints: BoxConstraints(maxWidth: MediaQuery.of(context).size.width * 0.85),
+                  child: _ReasoningPanel(thinking: m.thinking),
+                ),
+              if (!m.fromUser && m.text.trim().isNotEmpty)
+                _GroundingChip(message: m),
               Align(
                 alignment: align,
                 child: ConstrainedBox(
@@ -427,15 +467,261 @@ class _BubbleState extends State<_Bubble> with SingleTickerProviderStateMixin {
                     child: widget.showTyping
                         ? _TypingDots(controller: widget.typingDots, color: fg)
                         : SelectableText(
-                            m.text,
+                            _stripMarkers(m.text),
                             style: TextStyle(color: fg, fontSize: 15.5, height: 1.4),
                           ),
                   ),
                 ),
               ),
+              if (!m.fromUser && m.citations.isNotEmpty)
+                Padding(
+                  padding: const EdgeInsets.only(top: 8, left: 2, right: 2),
+                  child: ConstrainedBox(
+                    constraints: BoxConstraints(maxWidth: MediaQuery.of(context).size.width * 0.85),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Padding(
+                          padding: const EdgeInsets.only(left: 4, bottom: 6),
+                          child: Text(
+                            'Grounded in the lecture',
+                            style: TextStyle(
+                              fontSize: 11, letterSpacing: 0.3,
+                              fontWeight: FontWeight.w500,
+                              color: Colors.white.withValues(alpha: 0.45),
+                            ),
+                          ),
+                        ),
+                        ...m.citations.map((c) => _CitationCard(citation: c)),
+                      ],
+                    ),
+                  ),
+                ),
             ],
           ),
         ),
+      ),
+    );
+  }
+}
+
+bool _isOffTopic(String text) =>
+    text.trimLeft().toLowerCase().startsWith('[off-topic]');
+
+String _stripMarkers(String text) {
+  final trimmed = text.trimLeft();
+  if (trimmed.toLowerCase().startsWith('[off-topic]')) {
+    return trimmed.substring('[off-topic]'.length).trimLeft();
+  }
+  return text;
+}
+
+class _GroundingChip extends StatelessWidget {
+  final _ChatMessage message;
+  const _GroundingChip({required this.message});
+
+  @override
+  Widget build(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
+    final offTopic = _isOffTopic(message.text);
+    final citations = message.citations
+        .where((c) => c.result['found'] == true)
+        .length;
+    final Color bg;
+    final Color fg;
+    final IconData icon;
+    final String label;
+    if (offTopic) {
+      bg = cs.error.withValues(alpha: 0.16);
+      fg = cs.error;
+      icon = Icons.report_problem_rounded;
+      label = 'Off-topic · not answered from the lecture';
+    } else if (citations > 0) {
+      bg = const Color(0xFF1E4D34);
+      fg = const Color(0xFF7AE0A0);
+      icon = Icons.verified_rounded;
+      label = 'Grounded · $citations citation${citations == 1 ? '' : 's'}';
+    } else {
+      bg = Colors.white.withValues(alpha: 0.06);
+      fg = Colors.white.withValues(alpha: 0.55);
+      icon = Icons.info_outline_rounded;
+      label = 'No citations';
+    }
+    return Padding(
+      padding: const EdgeInsets.only(left: 2, bottom: 6),
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 4),
+        decoration: BoxDecoration(
+          color: bg, borderRadius: BorderRadius.circular(8),
+          border: Border.all(color: fg.withValues(alpha: 0.35)),
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(icon, size: 12, color: fg),
+            const SizedBox(width: 5),
+            Text(
+              label,
+              style: TextStyle(
+                fontSize: 11, fontWeight: FontWeight.w600,
+                letterSpacing: 0.2, color: fg,
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _ReasoningPanel extends StatefulWidget {
+  final String thinking;
+  const _ReasoningPanel({required this.thinking});
+
+  @override
+  State<_ReasoningPanel> createState() => _ReasoningPanelState();
+}
+
+class _ReasoningPanelState extends State<_ReasoningPanel> {
+  bool _expanded = false;
+
+  @override
+  Widget build(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
+    return Container(
+      margin: const EdgeInsets.only(bottom: 8),
+      decoration: BoxDecoration(
+        color: Colors.white.withValues(alpha: 0.03),
+        borderRadius: BorderRadius.circular(10),
+        border: Border.all(color: Colors.white.withValues(alpha: 0.08)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          InkWell(
+            borderRadius: BorderRadius.circular(10),
+            onTap: () => setState(() => _expanded = !_expanded),
+            child: Padding(
+              padding: const EdgeInsets.fromLTRB(12, 10, 10, 10),
+              child: Row(
+                children: [
+                  Icon(Icons.psychology_alt_rounded,
+                      size: 14, color: cs.secondary),
+                  const SizedBox(width: 6),
+                  Expanded(
+                    child: Text(
+                      _expanded ? 'Reasoning' : 'Reasoning · tap to reveal',
+                      style: TextStyle(
+                        fontSize: 11, fontWeight: FontWeight.w600,
+                        letterSpacing: 0.3,
+                        color: cs.secondary,
+                      ),
+                    ),
+                  ),
+                  Icon(
+                    _expanded ? Icons.expand_less_rounded : Icons.expand_more_rounded,
+                    size: 16, color: Colors.white.withValues(alpha: 0.55),
+                  ),
+                ],
+              ),
+            ),
+          ),
+          if (_expanded)
+            Padding(
+              padding: const EdgeInsets.fromLTRB(12, 0, 12, 12),
+              child: Text(
+                widget.thinking.trim(),
+                style: TextStyle(
+                  fontSize: 13, height: 1.4,
+                  color: Colors.white.withValues(alpha: 0.7),
+                  fontStyle: FontStyle.italic,
+                ),
+              ),
+            ),
+        ],
+      ),
+    );
+  }
+}
+
+class _CitationCard extends StatelessWidget {
+  final Citation citation;
+  const _CitationCard({required this.citation});
+
+  @override
+  Widget build(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
+    final c = citation;
+    final found = c.result['found'] == true;
+    final isQuote = c.toolName == 'quote_from_lecture';
+    final isTerm = c.toolName == 'look_up_term';
+    final icon = isQuote
+        ? Icons.format_quote_rounded
+        : (isTerm ? Icons.menu_book_rounded : Icons.bolt_rounded);
+    String title;
+    String body;
+    String? trailing;
+    if (!found) {
+      title = isQuote ? 'No matching quote' : 'No matching term';
+      body = isQuote
+          ? '"${c.args['query']}" wasn\'t in the transcript.'
+          : '"${c.args['term']}" isn\'t in the study pack.';
+    } else if (isQuote) {
+      title = 'quote_from_lecture';
+      body = '"${c.result['quote']}"';
+      trailing = c.result['timestamp'] as String?;
+    } else if (isTerm) {
+      title = 'look_up_term · ${c.result['term']}';
+      body = c.result['definition'] as String? ?? '';
+    } else {
+      title = c.toolName;
+      body = c.result.toString();
+    }
+    return Container(
+      margin: const EdgeInsets.only(bottom: 6),
+      padding: const EdgeInsets.fromLTRB(12, 10, 12, 10),
+      decoration: BoxDecoration(
+        color: cs.primary.withValues(alpha: 0.08),
+        borderRadius: BorderRadius.circular(10),
+        border: Border.all(color: cs.primary.withValues(alpha: 0.22)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Icon(icon, size: 14, color: cs.primary),
+              const SizedBox(width: 6),
+              Expanded(
+                child: Text(
+                  title,
+                  style: TextStyle(
+                    fontSize: 11, fontWeight: FontWeight.w600,
+                    letterSpacing: 0.2,
+                    color: cs.primary,
+                  ),
+                ),
+              ),
+              if (trailing != null)
+                Text(
+                  trailing,
+                  style: TextStyle(
+                    fontSize: 11,
+                    fontFeatures: const [FontFeature.tabularFigures()],
+                    color: Colors.white.withValues(alpha: 0.6),
+                  ),
+                ),
+            ],
+          ),
+          const SizedBox(height: 4),
+          Text(
+            body,
+            style: TextStyle(
+              fontSize: 13, height: 1.4,
+              color: Colors.white.withValues(alpha: 0.88),
+            ),
+          ),
+        ],
       ),
     );
   }
@@ -533,12 +819,16 @@ class _SuggestionRow extends StatelessWidget {
 class _Composer extends StatelessWidget {
   final TextEditingController controller;
   final bool enabled;
+  final bool generating;
   final VoidCallback onSubmit;
+  final VoidCallback? onStop;
   final String? hintText;
   const _Composer({
     required this.controller,
     required this.enabled,
     required this.onSubmit,
+    this.generating = false,
+    this.onStop,
     this.hintText,
   });
 
@@ -581,28 +871,43 @@ class _Composer extends StatelessWidget {
                 ),
               ),
               const SizedBox(width: 4),
-              ValueListenableBuilder<TextEditingValue>(
-                valueListenable: controller,
-                builder: (_, v, __) {
-                  final canSend = enabled && v.text.trim().isNotEmpty;
-                  return AnimatedContainer(
-                    duration: const Duration(milliseconds: 180),
-                    width: 44, height: 44,
-                    decoration: BoxDecoration(
-                      shape: BoxShape.circle,
-                      color: canSend ? cs.primary : cs.surfaceContainerHighest,
-                    ),
-                    child: IconButton(
-                      icon: Icon(
-                        Icons.arrow_upward_rounded,
-                        color: canSend ? cs.onPrimary : Colors.white.withValues(alpha: 0.3),
-                        size: 22,
+              if (generating)
+                AnimatedContainer(
+                  duration: const Duration(milliseconds: 180),
+                  width: 44, height: 44,
+                  decoration: BoxDecoration(
+                    shape: BoxShape.circle,
+                    color: cs.error.withValues(alpha: 0.9),
+                  ),
+                  child: IconButton(
+                    tooltip: 'Stop',
+                    icon: Icon(Icons.stop_rounded, color: cs.onError, size: 22),
+                    onPressed: onStop,
+                  ),
+                )
+              else
+                ValueListenableBuilder<TextEditingValue>(
+                  valueListenable: controller,
+                  builder: (_, v, __) {
+                    final canSend = enabled && v.text.trim().isNotEmpty;
+                    return AnimatedContainer(
+                      duration: const Duration(milliseconds: 180),
+                      width: 44, height: 44,
+                      decoration: BoxDecoration(
+                        shape: BoxShape.circle,
+                        color: canSend ? cs.primary : cs.surfaceContainerHighest,
                       ),
-                      onPressed: canSend ? onSubmit : null,
-                    ),
-                  );
-                },
-              ),
+                      child: IconButton(
+                        icon: Icon(
+                          Icons.arrow_upward_rounded,
+                          color: canSend ? cs.onPrimary : Colors.white.withValues(alpha: 0.3),
+                          size: 22,
+                        ),
+                        onPressed: canSend ? onSubmit : null,
+                      ),
+                    );
+                  },
+                ),
             ],
           ),
         ),
