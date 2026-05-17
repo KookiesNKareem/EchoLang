@@ -26,9 +26,6 @@ class LectureScreen extends StatefulWidget {
 
 class _LectureScreenState extends State<LectureScreen> {
   late Future<Lecture> _future;
-  // Live-translation state: when [_translating] is true the Translation tab
-  // renders [_streamingText] as it grows, instead of (or alongside) the
-  // already-saved translation from disk.
   bool _translating = false;
   String _streamingText = '';
   String? _translatingTo;
@@ -46,9 +43,6 @@ class _LectureScreenState extends State<LectureScreen> {
     });
   }
 
-  /// Kick off transcript prime + starter generation as soon as the lecture
-  /// is loaded, so by the time the user taps Ask Gemma the primed chat and
-  /// the localized hint/questions are already cached.
   void _prewarm(Lecture lecture) {
     if (widget.gemma.status != GemmaStatus.ready) return;
     final ctx = lecture.transcript.map((l) => l.text).join(' ');
@@ -223,8 +217,6 @@ class _LectureScreenState extends State<LectureScreen> {
         onPressed: () => context.pop(),
       ),
       actions: [
-        // Builder so onPressed gets a context inside DefaultTabController and
-        // can animate to the Translation tab the instant translation starts.
         Builder(
           builder: (innerCtx) => IconButton(
             tooltip: 'Translate',
@@ -374,10 +366,6 @@ class _TabBarDelegate extends SliverPersistentHeaderDelegate {
   @override
   bool shouldRebuild(_TabBarDelegate oldDelegate) => false;
 }
-
-// =================================================================
-// Study pack tab
-// =================================================================
 
 class _StudyPackTab extends StatelessWidget {
   final Lecture lecture;
@@ -568,10 +556,6 @@ class _PracticeRow extends StatelessWidget {
   }
 }
 
-// =================================================================
-// Transcript tab (Translation + Original both render here)
-// =================================================================
-
 class _TranscriptTab extends StatelessWidget {
   final List<TranscriptLine> lines;
   final bool isRtl;
@@ -632,11 +616,6 @@ class _TranscriptTab extends StatelessWidget {
   }
 }
 
-/// Translation tab. Three states:
-///   1. Live streaming from on-device Gemma — renders [streamingText] +
-///      a typing indicator. The user watches the tokens land in real time.
-///   2. Saved translation on disk — defers to [_TranscriptTab].
-///   3. Empty — shows a hint to tap the translate icon.
 class _TranslationTab extends StatelessWidget {
   final Lecture lecture;
   final bool translating;
@@ -724,8 +703,6 @@ class _TranslationTab extends StatelessWidget {
   }
 }
 
-/// Bottom sheet for picking a translation target. Draggable, scrollable, and
-/// designed to feel iOS-native without growing past 85% of the screen.
 class _LanguagePickerSheet extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
@@ -861,10 +838,6 @@ class _LanguagePickerSheet extends StatelessWidget {
     );
   }
 }
-
-// =================================================================
-// Shared helpers
-// =================================================================
 
 BoxDecoration _softCard(BuildContext context) => BoxDecoration(
       color: const Color(0xFF1A1A1F),

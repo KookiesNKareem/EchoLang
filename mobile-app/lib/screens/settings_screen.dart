@@ -1,7 +1,3 @@
-// Settings + about screen. Shows storage usage, on-device model status,
-// default language preference, and a "reset everything" escape hatch.
-// Keeps the hackathon credit visible so judges who poke around can find it.
-
 import 'dart:io';
 
 import 'package:flutter/material.dart';

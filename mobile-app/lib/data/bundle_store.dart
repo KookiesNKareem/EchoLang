@@ -1,6 +1,3 @@
-// Downloads lecture bundles from the Pi over local WiFi and unpacks them
-// into per-lecture directories under the app's documents dir.
-
 import 'dart:convert';
 import 'dart:io';
 
@@ -106,10 +103,6 @@ class BundleStore {
     if (await dir.exists()) await dir.delete(recursive: true);
   }
 
-  /// Seed a built-in sample lecture on first launch so the demo flow works
-  /// without needing the Pi to have recorded anything. Idempotent: the
-  /// `.seeded` sentinel ensures we don't recreate the directory if the user
-  /// has deleted the sample on purpose.
   Future<void> _ensureSampleLecture() async {
     final root = await _root;
     final dir = Directory('${root.path}/${kSampleLectureClassId}_en');
@@ -135,11 +128,6 @@ class BundleStore {
     await sentinel.writeAsString('1');
   }
 
-  /// Persist an on-device translation in the same on-disk format the Pi
-  /// produces, so the lecture viewer's Translation tab renders it without
-  /// any code-path branching. Segments the text on sentence boundaries and
-  /// stamps each line with a synthetic timecode 4s apart, matching the Pi
-  /// translation timing convention.
   Future<void> saveTranslation({
     required Directory dir,
     required String text,
@@ -167,11 +155,6 @@ class BundleStore {
     await manifestFile.writeAsString(const JsonEncoder.withIndent('  ').convert(raw));
   }
 
-  /// Save a locally-recorded lecture in the same on-disk shape Pi bundles
-  /// have, so the rest of the app (lecture viewer, Q&A) treats it identically.
-  ///
-  /// [transcript] is the full text from on-device Whisper.
-  /// [studyPack] is the on-device Gemma-generated pack (or null if skipped).
   Future<LectureRef> saveLocal({
     required String classId,
     required String title,
@@ -231,9 +214,6 @@ class BundleStore {
     return LectureRef(dir: dir, manifest: m);
   }
 
-  /// Split a long transcript into rough sentence-length lines so the viewer
-  /// can render them as separate caption rows. Whisper returns a single big
-  /// blob; we split on sentence boundaries.
   List<String> _segmentTranscript(String text, DateTime startedAt) {
     final clean = text.trim();
     if (clean.isEmpty) return ['(no speech detected)'];

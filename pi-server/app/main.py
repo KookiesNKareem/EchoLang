@@ -1,22 +1,3 @@
-"""FastAPI app for the LocalLearning Pi server.
-
-Endpoints (v1):
-  POST /api/class                   - start a new class (body: title, teacher?)
-  POST /api/class/{id}/end          - end a class
-  GET  /api/class/active            - currently-live class, if any
-  GET  /api/class/{id}              - class metadata + caption count
-
-  GET  /api/qr/{id}                 - QR code PNG that resolves to /join?class={id}
-  GET  /join                        - student PWA entry point (serves pwa/index.html)
-
-  GET  /api/stream/{class_id}/{lang}     - SSE stream of translated captions for a language
-  POST /api/class/{id}/confusion         - body: {student_id, caption_index}
-
-  HEAD /api/model/gemma             - phone-side Gemma LiteRT bundle metadata (size)
-  GET  /api/model/gemma             - phone-side Gemma LiteRT bundle (Range supported)
-
-  GET  /api/health                  - health check
-"""
 from __future__ import annotations
 
 import asyncio
@@ -44,9 +25,6 @@ from .translation import Translator, TranslationBus, TranslationWorker, make_tra
 
 log = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
-
-
-# ---- Globals wired up at startup --------------------------------------------------
 
 bus = TranslationBus()
 translator: Translator | None = None
@@ -136,14 +114,6 @@ def health():
     }
 
 
-# ---- Phone-side model serving ---------------------------------------------------
-# Lets the mobile app pull Gemma 4 E2B (LiteRT, MTP) from the Pi over LAN
-# instead of Hugging Face. The Pi only needs to download the 2.6 GB bundle
-# once; phones then grab it at WiFi speeds, no public internet required.
-# Starlette's FileResponse honors Range requests automatically, so flaky
-# connections resume from a .part file cleanly.
-
-
 def _gemma_litertlm_path() -> Path:
     return settings.models_dir / settings.gemma_litertlm
 
@@ -174,9 +144,6 @@ def get_gemma_model():
         filename=p.name,
         headers={"accept-ranges": "bytes"},
     )
-
-
-# ---- Class lifecycle ------------------------------------------------------------
 
 
 @app.post("/api/class")
@@ -232,10 +199,6 @@ def end_class(class_id: str):
     return session
 
 
-# ---- Study packs + bundle download --------------------------------------------
-
-# Cache: (class_id, lang) -> StudyPack. Generation is expensive; once a pack
-# exists we don't regenerate unless the caller asks for refresh.
 _pack_cache: dict[tuple[str, str], StudyPack] = {}
 
 
@@ -320,9 +283,6 @@ def get_class(class_id: str):
     }
 
 
-# ---- QR + join page -------------------------------------------------------------
-
-
 @app.get("/api/qr/{class_id}")
 def class_qr(class_id: str, request: Request):
     base = str(request.base_url).rstrip("/")
@@ -332,9 +292,6 @@ def class_qr(class_id: str, request: Request):
     img.save(buf, format="PNG")
     buf.seek(0)
     return Response(content=buf.getvalue(), media_type="image/png")
-
-
-# ---- Live translation stream ----------------------------------------------------
 
 
 @app.get("/api/stream/{class_id}/{lang}")
@@ -348,8 +305,6 @@ async def stream(class_id: str, lang: str, request: Request):
 
     async def event_gen():
         try:
-            # Replay any captions/translations that have already been emitted
-            # so a late-joining student doesn't miss what the teacher said.
             if lang == "en":
                 for c in store.captions(class_id):
                     yield {"event": "caption", "data": json.dumps(c.model_dump(mode="json"))}
@@ -374,9 +329,6 @@ async def stream(class_id: str, lang: str, request: Request):
     return EventSourceResponse(event_gen())
 
 
-# ---- Confusion marks ------------------------------------------------------------
-
-
 @app.post("/api/class/{class_id}/confusion")
 def add_confusion(class_id: str, req: ConfusionReq):
     if store.get(class_id) is None:
@@ -385,8 +337,6 @@ def add_confusion(class_id: str, req: ConfusionReq):
     store.add_confusion(class_id, mark)
     return mark
 
-
-# ---- Manual caption injection (for mic-less testing + teacher fallback) -------
 
 class InjectCaptionReq(BaseModel):
     text: str
@@ -411,8 +361,6 @@ def inject_caption(class_id: str, req: InjectCaptionReq):
     _on_caption(text, now, now)
     return {"ok": True}
 
-
-# ---- Static PWA ----------------------------------------------------------------
 
 PWA_DIR = Path(__file__).resolve().parents[2] / "pwa"
 

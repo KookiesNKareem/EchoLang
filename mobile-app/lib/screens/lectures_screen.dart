@@ -26,20 +26,17 @@ class LecturesScreen extends StatefulWidget {
 class _LecturesScreenState extends State<LecturesScreen> {
   late Future<List<LectureRef>> _future;
 
-  // Latest progress from each model's pre-load. Null = not started yet.
   double? _gemmaProgress;
   String? _gemmaMessage;
   double? _whisperProgress;
   String? _whisperMessage;
 
-  // SpeedDial — main FAB expands to Record / Join classroom.
   bool _fabOpen = false;
 
   @override
   void initState() {
     super.initState();
     _future = widget.store.list();
-    // Subscribe to pre-load progress (memoized, so no duplicate downloads).
     widget.gemma
         .ensureReady(onProgress: (p, status) {
           if (!mounted) return;
@@ -187,9 +184,6 @@ class _LecturesScreenState extends State<LecturesScreen> {
           SafeArea(
             child: _buildBody(),
           ),
-          // Tap-anywhere-to-close scrim. Sits between the content and the
-          // FAB so the SpeedDial actions stay tappable while everything
-          // else dims and absorbs touches.
           IgnorePointer(
             ignoring: !_fabOpen,
             child: AnimatedOpacity(
@@ -347,9 +341,6 @@ class _LecturesScreenState extends State<LecturesScreen> {
   }
 }
 
-/// A single SpeedDial menu entry. Slides up and fades in when [visible],
-/// becomes untappable when hidden so it doesn't catch stray touches behind
-/// the closed FAB.
 class _SpeedDialAction extends StatelessWidget {
   final bool visible;
   final IconData icon;

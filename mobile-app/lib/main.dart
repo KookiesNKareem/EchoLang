@@ -34,12 +34,6 @@ class _LocalLearningAppState extends State<LocalLearningApp> {
   @override
   void initState() {
     super.initState();
-    // Background pre-load both models after the first frame renders so by
-    // the time the user taps Record now or opens Q&A everything is ready
-    // (or actively downloading with a visible progress banner). Whisper is
-    // ~30MB; Gemma 4 E2B is ~2.6GB so the user sees real progress before
-    // they ever touch a record button. Failures are silent here — surfaced
-    // in the screens that actually need the model.
     WidgetsBinding.instance.addPostFrameCallback((_) {
       _whisper.ensureReady().catchError((_) {});
       _gemma.ensureReady().catchError((_) {}).then((_) {
@@ -88,9 +82,6 @@ const _benchQuestions = <String>[
 ];
 
 Future<void> _runAutoBench(GemmaService gemma) async {
-  // Tee every line through print() (release-mode friendly) AND append to
-  // results.json in the app docs dir so the host can pull it with devicectl
-  // even if Flutter's log forwarding misses release-mode output.
   final docs = await getApplicationDocumentsDirectory();
   final out = File('${docs.path}/bench_results.json');
   final lines = <String>[];
@@ -170,11 +161,8 @@ Future<void> _runAutoBench(GemmaService gemma) async {
 
   log('autobench enabled=$kAutoBench');
   log('start');
-  // Baseline = fresh chat each call (re-prefill transcript every question).
   await runMode(mode: 'fresh', freshChat: true);
-  // Drop the cached chat so primed path starts clean.
   gemma.unloadChat();
-  // Optimized = prime once, reuse session.
   await runMode(mode: 'primed', freshChat: false);
   log('results_path=${out.path}');
   await flush();
