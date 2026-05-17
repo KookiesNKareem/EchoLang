@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:io';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:go_router/go_router.dart';
 
 import '../data/bundle_store.dart';
@@ -573,7 +574,84 @@ class _StudyPackTab extends StatelessWidget {
                 (e) => _PracticeRow(index: e.key + 1, text: e.value, dir: dir, tAlign: tAlign),
               ),
         ],
+        if (!streaming) ...[
+          const SizedBox(height: 24),
+          _QuizCta(dirPath: lecture.dir.path),
+        ],
       ],
+    );
+  }
+}
+
+class _QuizCta extends StatelessWidget {
+  final String dirPath;
+  const _QuizCta({required this.dirPath});
+
+  @override
+  Widget build(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
+    return Material(
+      color: Colors.transparent,
+      child: InkWell(
+        borderRadius: BorderRadius.circular(16),
+        onTap: () {
+          HapticFeedback.mediumImpact();
+          context.push('/quiz/${Uri.encodeComponent(dirPath)}');
+        },
+        child: Container(
+          padding: const EdgeInsets.all(18),
+          decoration: BoxDecoration(
+            borderRadius: BorderRadius.circular(16),
+            gradient: LinearGradient(
+              begin: Alignment.topLeft, end: Alignment.bottomRight,
+              colors: [
+                cs.primary.withValues(alpha: 0.22),
+                cs.primary.withValues(alpha: 0.06),
+              ],
+            ),
+            border: Border.all(color: cs.primary.withValues(alpha: 0.35)),
+          ),
+          child: Row(
+            children: [
+              Container(
+                width: 44, height: 44,
+                alignment: Alignment.center,
+                decoration: BoxDecoration(
+                  shape: BoxShape.circle,
+                  color: cs.primary.withValues(alpha: 0.22),
+                ),
+                child: Icon(Icons.fact_check_rounded,
+                    color: cs.primary, size: 22),
+              ),
+              const SizedBox(width: 14),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      'Quiz me on this lecture',
+                      style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                            color: Colors.white,
+                          ),
+                    ),
+                    const SizedBox(height: 4),
+                    Text(
+                      'Five multiple-choice questions, generated on your phone.',
+                      style: TextStyle(
+                        fontSize: 12.5, height: 1.4,
+                        color: Colors.white.withValues(alpha: 0.65),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              const SizedBox(width: 6),
+              Icon(Icons.arrow_forward_rounded,
+                  color: cs.primary, size: 22),
+            ],
+          ),
+        ),
+      ),
     );
   }
 }

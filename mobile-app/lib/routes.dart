@@ -7,6 +7,7 @@ import 'screens/connect_screen.dart';
 import 'screens/lecture_screen.dart';
 import 'screens/lectures_screen.dart';
 import 'screens/qa_screen.dart';
+import 'screens/quiz_screen.dart';
 import 'screens/record_screen.dart';
 import 'screens/settings_screen.dart';
 
@@ -49,6 +50,14 @@ GoRouter buildRouter({
       GoRoute(
         path: '/qa/:dirPath',
         builder: (_, state) => QAScreen(
+          store: store,
+          gemma: gemma,
+          dirPath: Uri.decodeComponent(state.pathParameters['dirPath']!),
+        ),
+      ),
+      GoRoute(
+        path: '/quiz/:dirPath',
+        builder: (_, state) => QuizScreen(
           store: store,
           gemma: gemma,
           dirPath: Uri.decodeComponent(state.pathParameters['dirPath']!),

@@ -7,6 +7,20 @@ import '../data/models.dart';
 enum GemmaStatus { notReady, downloading, ready, error }
 
 /// Localized Q&A starter content for whatever language the lecture is in.
+/// One multiple-choice quiz question grounded in the lecture transcript.
+class QuizItem {
+  final String question;
+  final List<String> options;
+  final int correctIndex;
+  final String explanation;
+  const QuizItem({
+    required this.question,
+    required this.options,
+    required this.correctIndex,
+    required this.explanation,
+  });
+}
+
 class QAStarters {
   final String hint;
   final String subtitle;
@@ -667,6 +681,101 @@ class GemmaService {
       a.summary != b.summary ||
       a.keyTerms.length != b.keyTerms.length ||
       a.practiceQuestions.length != b.practiceQuestions.length;
+
+  /// Stream a multiple-choice quiz from the lecture transcript. Yields each
+  /// [QuizItem] as soon as it's fully parseable from the model's growing
+  /// output, so the quiz screen can show question 1 while questions 2-5 are
+  /// still decoding.
+  Stream<QuizItem> generateQuizStream({
+    required String transcript,
+    String languageName = 'English',
+    int count = 5,
+  }) async* {
+    if (_status != GemmaStatus.ready || _model == null) {
+      throw StateError('Gemma not ready (status=$_status)');
+    }
+    final trimmed = _trimContext(transcript);
+    final prompt =
+        'You will be shown a lecture transcript. Produce a multiple-choice '
+        'quiz with exactly $count items that test understanding of the '
+        'material. All string values must be written in $languageName.\n\n'
+        'Output STRICT JSON in this exact shape, no commentary, no code '
+        'fence:\n'
+        '{\n'
+        '  "items": [\n'
+        '    {\n'
+        '      "question": "...",\n'
+        '      "options": ["A choice", "B choice", "C choice", "D choice"],\n'
+        '      "correct": 0,\n'
+        '      "explanation": "one short sentence citing the lecture"\n'
+        '    }\n'
+        '  ]\n'
+        '}\n\n'
+        'Rules:\n'
+        '- Each "options" array has exactly 4 strings.\n'
+        '- "correct" is the index 0-3 of the right option.\n'
+        '- Questions must be answerable directly from the transcript. No '
+        'outside trivia.\n'
+        '- Emit "items" in order so partial decoding can show questions as '
+        'they land.\n\n'
+        'Transcript:\n"""\n$trimmed\n"""\n\nJSON:';
+    final chat = await _model!.createChat();
+    await chat.addQueryChunk(Message.text(text: prompt, isUser: true));
+    final buf = StringBuffer();
+    var lastYielded = 0;
+    await for (final chunk in chat.generateChatResponseAsync()) {
+      switch (chunk) {
+        case TextResponse(:final token):
+          buf.write(token);
+        case ThinkingResponse(:final content):
+          buf.write(content);
+        default:
+          break;
+      }
+      final parsed = _parseQuizItems(buf.toString());
+      while (lastYielded < parsed.length) {
+        yield parsed[lastYielded];
+        lastYielded += 1;
+      }
+    }
+    final finalItems = _parseQuizItems(buf.toString());
+    while (lastYielded < finalItems.length) {
+      yield finalItems[lastYielded];
+      lastYielded += 1;
+    }
+  }
+
+  /// Pull every fully-formed quiz object out of an in-progress JSON blob.
+  /// Tolerates trailing garbage / unclosed arrays — used to surface items
+  /// to the UI as soon as each one is complete.
+  List<QuizItem> _parseQuizItems(String raw) {
+    final out = <QuizItem>[];
+    final objRe = RegExp(
+      r'"question"\s*:\s*"((?:[^"\\]|\\.)*)"'
+      r'[^}]*?"options"\s*:\s*\[((?:[^\[\]]|"(?:[^"\\]|\\.)*")*)\]'
+      r'[^}]*?"correct"\s*:\s*(\d+)'
+      r'[^}]*?"explanation"\s*:\s*"((?:[^"\\]|\\.)*)"',
+      dotAll: true,
+    );
+    for (final m in objRe.allMatches(raw)) {
+      final question = _unescape(m.group(1)!);
+      final optsRaw = m.group(2)!;
+      final correct = int.tryParse(m.group(3)!) ?? 0;
+      final explanation = _unescape(m.group(4)!);
+      final options = RegExp(r'"((?:[^"\\]|\\.)*)"')
+          .allMatches(optsRaw)
+          .map((m) => _unescape(m.group(1)!))
+          .toList();
+      if (options.length < 4) continue;
+      out.add(QuizItem(
+        question: question,
+        options: options.take(4).toList(),
+        correctIndex: correct.clamp(0, 3),
+        explanation: explanation,
+      ));
+    }
+    return out;
+  }
 
   void unload() {
     _chat = null;
