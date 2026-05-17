@@ -1,10 +1,19 @@
+import 'dart:async';
+import 'dart:convert';
+import 'dart:io';
+
 import 'package:flutter/material.dart';
+import 'package:path_provider/path_provider.dart';
 
 import 'data/bundle_store.dart';
 import 'llm/gemma.dart';
 import 'llm/whisper.dart';
 import 'routes.dart';
 import 'theme.dart';
+
+/// Compile-time flag for the autonomous on-device benchmark.
+/// Build with: `flutter run --release --dart-define=AUTOBENCH=1`
+const bool kAutoBench = bool.fromEnvironment('AUTOBENCH', defaultValue: false);
 
 void main() {
   runApp(const LocalLearningApp());
@@ -33,7 +42,9 @@ class _LocalLearningAppState extends State<LocalLearningApp> {
     // in the screens that actually need the model.
     WidgetsBinding.instance.addPostFrameCallback((_) {
       _whisper.ensureReady().catchError((_) {});
-      _gemma.ensureReady().catchError((_) {});
+      _gemma.ensureReady().catchError((_) {}).then((_) {
+        if (kAutoBench) unawaited(_runAutoBench(_gemma));
+      });
     });
   }
 
@@ -53,4 +64,104 @@ class _LocalLearningAppState extends State<LocalLearningApp> {
       routerConfig: buildRouter(store: _store, gemma: _gemma, whisper: _whisper),
     );
   }
+}
+
+const _benchContext = '''
+Photosynthesis is the process by which green plants, algae, and some bacteria
+convert light energy into chemical energy stored in glucose. It happens mainly
+in the chloroplasts of plant cells, which contain the pigment chlorophyll.
+Chlorophyll absorbs light most efficiently in the red and blue wavelengths and
+reflects green, which is why leaves look green.
+
+The overall reaction takes six molecules of carbon dioxide and six molecules of
+water and uses light energy to produce one molecule of glucose and six molecules
+of oxygen. The process has two main stages. The light-dependent reactions occur
+in the thylakoid membranes and split water to release oxygen while making ATP
+and NADPH. The light-independent reactions, also called the Calvin cycle, take
+place in the stroma and use ATP and NADPH to fix carbon dioxide into glucose.
+''';
+
+const _benchQuestions = <String>[
+  'In one sentence, what is photosynthesis?',
+  'Why do leaves appear green?',
+  'What are the two stages of photosynthesis and where in the chloroplast does each happen?',
+];
+
+Future<void> _runAutoBench(GemmaService gemma) async {
+  // Tee every line through print() (release-mode friendly) AND append to
+  // results.json in the app docs dir so the host can pull it with devicectl
+  // even if Flutter's log forwarding misses release-mode output.
+  final docs = await getApplicationDocumentsDirectory();
+  final out = File('${docs.path}/bench_results.json');
+  final lines = <String>[];
+  final trials = <Map<String, dynamic>>[];
+  void log(String line) {
+    final stamped = 'BENCH: $line';
+    // ignore: avoid_print
+    print(stamped);
+    lines.add(stamped);
+  }
+
+  Future<void> flush() async {
+    final payload = {
+      'started_at_unix_ms': DateTime.now().millisecondsSinceEpoch,
+      'log': lines,
+      'trials': trials,
+    };
+    try {
+      await out.writeAsString(const JsonEncoder.withIndent('  ').convert(payload));
+    } catch (_) {}
+  }
+
+  log('autobench enabled=$kAutoBench');
+  log('start');
+  // Warm-up: first generation pays one-time costs (graph compile etc.).
+  try {
+    log('warmup begin');
+    final warm = await gemma.benchAsk(
+      lectureContext: _benchContext,
+      question: 'Reply with the single word ok.',
+    );
+    final w = {
+      'phase': 'warmup',
+      'first_token_ms': warm.firstTokenLatency.inMilliseconds,
+      'total_ms': warm.totalDuration.inMilliseconds,
+      'tokens': warm.approxTokens,
+      'tps': double.parse(warm.tokensPerSec.toStringAsFixed(2)),
+      'output': warm.output,
+    };
+    trials.add(w);
+    log('warmup first_token_ms=${w['first_token_ms']} '
+        'total_ms=${w['total_ms']} tokens=${w['tokens']} tps=${w['tps']}');
+  } catch (e) {
+    log('warmup error: $e');
+    await flush();
+    log('done');
+    return;
+  }
+  for (var i = 0; i < _benchQuestions.length; i++) {
+    final q = _benchQuestions[i];
+    try {
+      final r = await gemma.benchAsk(lectureContext: _benchContext, question: q);
+      final t = {
+        'phase': 'trial',
+        'index': i,
+        'question': q,
+        'first_token_ms': r.firstTokenLatency.inMilliseconds,
+        'total_ms': r.totalDuration.inMilliseconds,
+        'tokens': r.approxTokens,
+        'tps': double.parse(r.tokensPerSec.toStringAsFixed(2)),
+        'output': r.output,
+      };
+      trials.add(t);
+      log('trial=$i first_token_ms=${t['first_token_ms']} '
+          'total_ms=${t['total_ms']} tokens=${t['tokens']} tps=${t['tps']}');
+      await flush();
+    } catch (e) {
+      log('trial=$i error: $e');
+    }
+  }
+  log('results_path=${out.path}');
+  await flush();
+  log('done');
 }

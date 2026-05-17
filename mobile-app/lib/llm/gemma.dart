@@ -16,6 +16,21 @@ import '../data/models.dart';
 
 enum GemmaStatus { notReady, downloading, ready, error }
 
+class GemmaBenchResult {
+  final Duration firstTokenLatency;
+  final Duration totalDuration;
+  final int approxTokens;
+  final double tokensPerSec;
+  final String output;
+  const GemmaBenchResult({
+    required this.firstTokenLatency,
+    required this.totalDuration,
+    required this.approxTokens,
+    required this.tokensPerSec,
+    required this.output,
+  });
+}
+
 class GemmaService {
   /// Public, ungated MTP-enabled mirror of Gemma 4 E2B (LiteRT). MTP =
   /// Multi-Token Prediction (Google blog post 2026-05): a tiny drafter
@@ -129,6 +144,60 @@ class GemmaService {
     await _chat!.addQueryChunk(Message.text(text: question, isUser: true));
     final response = await _chat!.generateChatResponse();
     return _extractText(response);
+  }
+
+  /// Streaming benchmark variant of [ask]. Times first-token latency and
+  /// approximate tokens/sec (chars/4 heuristic — the litertlm runtime doesn't
+  /// expose token counts directly through the flutter_gemma surface).
+  Future<GemmaBenchResult> benchAsk({
+    required String lectureContext,
+    required String question,
+  }) async {
+    if (_status != GemmaStatus.ready || _model == null) {
+      throw StateError('Gemma not ready (status=$_status)');
+    }
+    final trimmed = _trimContext(lectureContext);
+    final preamble =
+        'You are a tutor helping a student review a lecture they attended. '
+        'Use only what is in the transcript below. If the answer is not in '
+        'the transcript, say so plainly.\n\n--- LECTURE TRANSCRIPT ---\n$trimmed\n--- END ---';
+    final chat = await _model!.createChat();
+    await chat.addQueryChunk(Message.text(text: preamble, isUser: true));
+    await chat.addQueryChunk(Message.text(text: question, isUser: true));
+
+    final sw = Stopwatch()..start();
+    Duration? firstChunkAt;
+    final buf = StringBuffer();
+    var tokenCount = 0;
+    await for (final chunk in chat.generateChatResponseAsync()) {
+      firstChunkAt ??= sw.elapsed;
+      // Each streamed event is one decoded token (TextResponse) or a thinking
+      // fragment we still want to time. Counting events = real token count;
+      // the chars/4 heuristic in the previous version was inflated 5-10×.
+      switch (chunk) {
+        case TextResponse(:final token):
+          buf.write(token);
+          tokenCount += 1;
+        case ThinkingResponse(:final content):
+          buf.write(content);
+          tokenCount += 1;
+        default:
+          // Function calls etc. — rare in plain Q&A; still count as one event.
+          tokenCount += 1;
+      }
+    }
+    sw.stop();
+    final total = sw.elapsed;
+    final decodeDur = (total - (firstChunkAt ?? total));
+    final decodeSecs = decodeDur.inMicroseconds / 1e6;
+    final tps = decodeSecs > 0 ? tokenCount / decodeSecs : 0.0;
+    return GemmaBenchResult(
+      firstTokenLatency: firstChunkAt ?? Duration.zero,
+      totalDuration: total,
+      approxTokens: tokenCount,
+      tokensPerSec: tps,
+      output: buf.toString(),
+    );
   }
 
   Future<StudyPack> generateStudyPack({required String transcript, String lang = 'en'}) async {
