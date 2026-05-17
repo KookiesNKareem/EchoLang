@@ -9,6 +9,7 @@ import 'package:http/http.dart' as http;
 import 'package:path_provider/path_provider.dart';
 
 import 'models.dart';
+import 'sample_lecture.dart';
 
 class BundleStore {
   Future<Directory> get _root async {
@@ -19,6 +20,7 @@ class BundleStore {
   }
 
   Future<List<LectureRef>> list() async {
+    await _ensureSampleLecture();
     final root = await _root;
     final entries = await root.list().toList();
     final out = <LectureRef>[];
@@ -102,6 +104,35 @@ class BundleStore {
 
   Future<void> delete(Directory dir) async {
     if (await dir.exists()) await dir.delete(recursive: true);
+  }
+
+  /// Seed a built-in sample lecture on first launch so the demo flow works
+  /// without needing the Pi to have recorded anything. Idempotent: the
+  /// `.seeded` sentinel ensures we don't recreate the directory if the user
+  /// has deleted the sample on purpose.
+  Future<void> _ensureSampleLecture() async {
+    final root = await _root;
+    final dir = Directory('${root.path}/${kSampleLectureClassId}_en');
+    final sentinel = File('${dir.path}/.seeded');
+    if (await sentinel.exists()) return;
+    if (await dir.exists()) {
+      // Already created by a previous run (older version without sentinel).
+      // Just write the sentinel and bail.
+      await sentinel.writeAsString('1');
+      return;
+    }
+    final startedAt = DateTime.now().toUtc().subtract(const Duration(days: 1));
+    final endedAt = startedAt.add(const Duration(minutes: 38));
+    await saveLocal(
+      classId: kSampleLectureClassId,
+      title: kSampleLectureTitle,
+      lang: 'en',
+      startedAt: startedAt,
+      endedAt: endedAt,
+      transcript: kSampleLectureTranscript,
+      studyPack: null,
+    );
+    await sentinel.writeAsString('1');
   }
 
   Future<void> renameLecture({required Directory dir, required String title}) async {
