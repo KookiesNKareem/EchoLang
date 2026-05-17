@@ -73,22 +73,34 @@ post_install do |installer|
     end
   end
 
-  # Generate stub .dSYM bundles for vendored binary frameworks that ship
-  # without dSYMs (cactus + flutter_gemma's LiteRT-LM dylibs are stripped at
-  # vendor build time, with debug-info references pointing at vendor caches
-  # we don't have). Without dSYMs, App Store Connect's symbol upload fails
-  # with "Upload Symbols Failed" — IPA is accepted, but crashes from those
-  # frameworks won't be symbolicated. The helper writes 56-byte MH_DSYM
-  # Mach-O files whose LC_UUID matches each framework binary, which is what
-  # Apple's pipeline checks. See ios/scripts/make_stub_dsyms.sh.
+  # Patch native_assets framework Info.plists to declare MinimumOSVersion=16.0.
+  # flutter_gemma's hook/build.dart wraps stripped dylibs into .frameworks with
+  # Info.plist MinimumOSVersion="13.0", but the underlying Mach-O binaries are
+  # built with minos 14–16. App Store validation flags ITMS-90208 ("bundle does
+  # not support the minimum OS Version specified in the Info.plist") when the
+  # binary's minos exceeds the plist's MinimumOSVersion. Bumping the plist to
+  # 16.0 (matching the app's deployment target) is correct since the binaries
+  # require iOS 14–16+ anyway. dSYM stub generation also runs from here so it
+  # finds the patched frameworks already in TARGET_BUILD_DIR.
   frameworks_script_path = File.join(__dir__, 'Pods', 'Target Support Files', 'Pods-Runner', 'Pods-Runner-frameworks.sh')
   if File.exist?(frameworks_script_path)
-    sentinel = '# VENDORED_DSYM_STUBS_V2'
+    sentinel = '# VENDORED_FRAMEWORK_PATCHES_V3'
     contents = File.read(frameworks_script_path)
     unless contents.include?(sentinel)
       File.open(frameworks_script_path, 'a') do |f|
         f.puts ''
         f.puts sentinel
+        f.puts 'for fw in GemmaModelConstraintProvider LiteRtMetalAccelerator StreamProxy LiteRtLm objective_c sqlite3; do'
+        f.puts '  plist="${TARGET_BUILD_DIR}/${FRAMEWORKS_FOLDER_PATH}/${fw}.framework/Info.plist"'
+        f.puts '  if [ -f "$plist" ]; then'
+        f.puts '    plutil -replace MinimumOSVersion -string "16.0" "$plist" >/dev/null 2>&1 || \\'
+        f.puts '      plutil -insert MinimumOSVersion -string "16.0" "$plist"'
+        f.puts '    echo "Patched ${fw}.framework Info.plist MinimumOSVersion=16.0"'
+        f.puts '  fi'
+        f.puts 'done'
+        f.puts ''
+        f.puts '# Stub .dSYM bundles for vendored binary frameworks that ship without'
+        f.puts '# dSYMs. See ios/scripts/make_stub_dsyms.sh. Runs only during archive.'
         f.puts 'if [ "${ACTION:-}" = "install" ] && [ -n "${DWARF_DSYM_FOLDER_PATH:-}" ]; then'
         f.puts '  "${SRCROOT}/scripts/make_stub_dsyms.sh" \\'
         f.puts '    "${TARGET_BUILD_DIR}/${FRAMEWORKS_FOLDER_PATH}" \\'

@@ -5,9 +5,11 @@
 // in the lectures list as if it had been downloaded from a Pi.
 
 import 'dart:async';
+import 'dart:io';
 
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
+import 'package:path_provider/path_provider.dart';
 import 'package:uuid/uuid.dart';
 
 import '../data/bundle_store.dart';
@@ -38,8 +40,10 @@ class _RecordScreenState extends State<RecordScreen> with SingleTickerProviderSt
   String? _statusMsg;
   Duration _elapsed = Duration.zero;
   Timer? _timer;
-  // Live transcript built up from partial-result callbacks while recording.
+  Timer? _flushTimer;
   String _livePartial = '';
+  String _latestPartial = '';
+  DateTime _lastUiFlush = DateTime.fromMillisecondsSinceEpoch(0);
   DateTime? _startedAt;
 
   @override
@@ -49,10 +53,7 @@ class _RecordScreenState extends State<RecordScreen> with SingleTickerProviderSt
       vsync: this,
       duration: const Duration(milliseconds: 1200),
     )..repeat(reverse: true);
-    // Free Gemma's ~2.6 GB weights while the user is recording. The mic +
-    // STT + audio buffers + Gemma together crossed the iOS jetsam threshold
-    // on testers' phones and crashed the app mid-recording. We reload Gemma
-    // after the user stops recording, before the study-pack step.
+    // Unload Gemma to free RAM during recording; reload when study pack starts.
     widget.gemma.unload();
   }
 
@@ -60,10 +61,7 @@ class _RecordScreenState extends State<RecordScreen> with SingleTickerProviderSt
   void dispose() {
     _pulse.dispose();
     _timer?.cancel();
-    // Stop any in-flight listening session but DO NOT tear down the whisper
-    // service — it's app-scoped and unloading it here forces a full re-init
-    // (and re-permission) on the next visit, which fails with "not ready"
-    // because of the cached ready-future.
+    // Stop listening but don't unload whisper service (app-scoped; preserve state).
     if (widget.whisper.isListening) {
       widget.whisper.stopListening().catchError((_) => '');
     }
@@ -86,12 +84,22 @@ class _RecordScreenState extends State<RecordScreen> with SingleTickerProviderSt
       _statusMsg = null;
       _elapsed = Duration.zero;
       _livePartial = '';
+      _latestPartial = '';
       _startedAt = DateTime.now();
     });
     try {
       await widget.whisper.startListening(onPartial: (partial) {
         if (!mounted) return;
-        setState(() => _livePartial = partial);
+        _latestPartial = partial;
+        // Throttle UI rebuilds — without this, a 30-minute session fires
+        // setState on every token and the whole transcript widget re-lays
+        // out hundreds of times a second. We cap to ~10 fps; the file flush
+        // timer below catches whatever lands between rebuilds.
+        final now = DateTime.now();
+        if (now.difference(_lastUiFlush).inMilliseconds >= 100) {
+          _lastUiFlush = now;
+          setState(() => _livePartial = partial);
+        }
       });
     } catch (e) {
       setState(() {
@@ -103,10 +111,22 @@ class _RecordScreenState extends State<RecordScreen> with SingleTickerProviderSt
     _timer = Timer.periodic(const Duration(seconds: 1), (_) {
       if (mounted) setState(() => _elapsed += const Duration(seconds: 1));
     });
+    // Flush the live transcript to disk every 10s so a crash mid-recording
+    // doesn't lose everything. On next launch we can recover from
+    // Documents/in_progress_recording.txt.
+    _flushTimer = Timer.periodic(const Duration(seconds: 10), (_) async {
+      if (_latestPartial.isEmpty) return;
+      try {
+        final docs = await getApplicationDocumentsDirectory();
+        final f = File('${docs.path}/in_progress_recording.txt');
+        await f.writeAsString(_latestPartial);
+      } catch (_) {}
+    });
   }
 
   Future<void> _stopRecording() async {
     _timer?.cancel();
+    _flushTimer?.cancel();
     await _processRecording();
   }
 
@@ -143,6 +163,12 @@ class _RecordScreenState extends State<RecordScreen> with SingleTickerProviderSt
         studyPack: pack,
       );
 
+      // Recording made it safely to disk — clear the recovery file.
+      try {
+        final docs = await getApplicationDocumentsDirectory();
+        final f = File('${docs.path}/in_progress_recording.txt');
+        if (await f.exists()) await f.delete();
+      } catch (_) {}
       if (!mounted) return;
       setState(() {
         _phase = _Phase.done;

@@ -36,12 +36,7 @@ class QAStarters {
     required this.questions,
   });
 
-  /// Safe English defaults the UI falls back to instead of running a
-  /// separate inference call. flutter_gemma 0.14.5's createChat() leaks
-  /// state on iOS — running a JSON-output starter prompt anchored the
-  /// model into that format, so subsequent Q&A turns echoed the starter
-  /// JSON back at the user. Static fallback eliminates that contamination
-  /// source entirely.
+  /// Static fallback avoids a known flutter_gemma state-leak on iOS.
   static const QAStarters fallback = QAStarters(
     hint: 'Ask anything about this lecture…',
     subtitle: 'Gemma 4 · on this phone',
@@ -122,12 +117,7 @@ class GemmaService {
   InferenceModel? _model;
   InferenceChat? _chat;
   int? _primedContextHash;
-  /// Global serialization gate: every public inference call (prime,
-  /// generateStarters, ask, translate, study pack, quiz) chains onto this
-  /// future before touching the model. Two concurrent createChat() calls
-  /// against the same InferenceModel on iOS leak context across sessions
-  /// — the second call's chat ends up replaying the first's prompt. Until
-  /// flutter_gemma isolates that properly, we never let two ops overlap.
+  /// Serialization gate to prevent concurrent createChat() calls that leak context on iOS.
   Future<void> _inferenceGate = Future.value();
 
   Future<T> _serialize<T>(Future<T> Function() op) {
@@ -192,13 +182,7 @@ class GemmaService {
       for (final l in _listeners) {
         l(null, _statusMessage!);
       }
-      // 4096 is the sweet spot: large enough to cover transcript (~1500 tok)
-      // + translation output (~1500 tok) with headroom for Q&A turns, small
-      // enough that the KV-cache allocation doesn't trip iOS jetsam on
-      // 4–6 GB phones. The .litertlm itself is built for 64k context, but
-      // sizing maxTokens for the host device's RAM budget matters more than
-      // theoretical model capacity. Going higher (we tried 8192) crashed
-      // the app on lower-RAM devices.
+      // 4096 balances transcript coverage with iOS RAM constraints on lower-end devices.
       _model = await FlutterGemma.getActiveModel(
         maxTokens: 4096,
         preferredBackend: PreferredBackend.gpu,
@@ -538,17 +522,7 @@ class GemmaService {
     );
   }
 
-  /// Localized Q&A starter content for [languageName]. Cached per
-  /// (transcript-hash, language) so lecture_screen can call this to pre-warm
-  /// the starters in the background, and qa_screen later gets an instant
-  /// cache hit. Runs in a fresh chat so it does not evict the primed
-  /// lecture context.
-  /// Returns safe static starter content. We previously generated this
-  /// dynamically per-lecture-and-language, but the underlying flutter_gemma
-  /// behavior leaked state across chat sessions on iOS: the JSON-output
-  /// starters prompt anchored the model into that format, and subsequent
-  /// Q&A turns echoed the starters JSON back as the "answer". Skipping
-  /// the inference call here is the most reliable mitigation.
+  /// Returns static starter content (avoids state-leak on iOS).
   Future<QAStarters> generateStarters({
     required String lectureContext,
     required String languageName,
@@ -627,10 +601,7 @@ class GemmaService {
     });
   }
 
-  /// Streaming variant: produces partial [StudyPack] snapshots as each
-  /// section (summary → key terms → practice questions) lands. The final
-  /// emit contains the complete pack. Lets the UI animate the pack in
-  /// section-by-section instead of staring at a spinner.
+  /// Streaming variant: yields partial packs section-by-section for progressive UI updates.
   Stream<StudyPack> generateStudyPackStream({
     required String transcript,
     String lang = 'en',
@@ -747,10 +718,7 @@ class GemmaService {
       a.keyTerms.length != b.keyTerms.length ||
       a.practiceQuestions.length != b.practiceQuestions.length;
 
-  /// Stream a multiple-choice quiz from the lecture transcript. Yields each
-  /// [QuizItem] as soon as it's fully parseable from the model's growing
-  /// output, so the quiz screen can show question 1 while questions 2-5 are
-  /// still decoding.
+  /// Streams quiz items as they parse, allowing progressive UI rendering.
   Stream<QuizItem> generateQuizStream({
     required String transcript,
     String languageName = 'English',

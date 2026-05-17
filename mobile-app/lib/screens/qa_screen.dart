@@ -40,10 +40,7 @@ class _QAScreenState extends State<QAScreen> with SingleTickerProviderStateMixin
   bool _generating = false;
   bool _cancelGeneration = false;
   String? _modelStatus;
-  /// Static QA starter content. We previously generated per-lecture
-  /// localized starters via the model, but that prompt anchored the
-  /// model into a JSON-output format on iOS, leaking into subsequent
-  /// Q&A turns. See [QAStarters.fallback] for the reasoning.
+  /// Static starter content (avoids iOS state-leak issue).
   final QAStarters _starters = QAStarters.fallback;
 
   @override
@@ -103,8 +100,7 @@ class _QAScreenState extends State<QAScreen> with SingleTickerProviderStateMixin
     _maybeLoadStarters();
   }
 
-  /// No-op now; we use the static QAStarters.fallback. Kept as a method so
-  /// _maybePrewarm doesn't need restructuring.
+  /// Kept for compatibility with _maybePrewarm.
   void _maybeLoadStarters() {}
 
   Future<void> _send([String? prefilled]) async {

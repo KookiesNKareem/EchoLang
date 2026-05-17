@@ -16,11 +16,7 @@ import 'theme.dart';
 /// Build with: `flutter run --release --dart-define=AUTOBENCH=1`
 const bool kAutoBench = bool.fromEnvironment('AUTOBENCH', defaultValue: false);
 
-/// Compile-time flag for the rigorous Gemma test suite. Runs every public
-/// inference path back-to-back, including known contamination triggers
-/// (concurrent ops, switching between starters / Q&A / translate). Writes
-/// a JSON report to Documents/gemma_tests.json that the host pulls with
-/// `xcrun devicectl device copy from`.
+/// Compile-time flag for rigorous Gemma test suite (exercise all inference paths).
 const bool kRobustTest = bool.fromEnvironment('ROBUST_TEST', defaultValue: false);
 
 void main() {
@@ -213,13 +209,6 @@ Future<void> _runAutoBench(GemmaService gemma) async {
   log('done');
 }
 
-// ============================================================================
-// Robust test suite — exercises every Gemma inference path in isolation AND
-// under concurrent load that previously triggered the "starters JSON shown
-// as Q&A answer" contamination bug. Each test records pass/fail with the
-// raw output so the host can verify.
-// ============================================================================
-
 const _testTranscript = _benchContext;
 
 Future<void> _runRobustTest(GemmaService gemma) async {
@@ -309,8 +298,7 @@ Future<void> _runRobustTest(GemmaService gemma) async {
     };
   });
 
-  // 4. askWithToolsStream — typical on-topic question. Output must NOT look
-  //    like the starters JSON. Citations are optional but should not crash.
+  // 4. askWithToolsStream — on-topic question with tool calls.
   await record('askWithTools.on_topic', () async {
     final transcript = _splitTranscript(_testTranscript);
     final buf = StringBuffer();
@@ -342,8 +330,7 @@ Future<void> _runRobustTest(GemmaService gemma) async {
     };
   });
 
-  // 5. askWithToolsStream — off-topic question must emit the [OFF-TOPIC]
-  //    marker (we prompt the model to do this; we don't fail hard if not).
+  // 5. askWithToolsStream — off-topic question.
   await record('askWithTools.off_topic', () async {
     final transcript = _splitTranscript(_testTranscript);
     final buf = StringBuffer();
@@ -363,8 +350,7 @@ Future<void> _runRobustTest(GemmaService gemma) async {
     };
   });
 
-  // 6. translateStream — short text, must produce non-empty output not
-  //    matching the starters/quiz JSON.
+  // 6. translateStream — translation to Spanish.
   await record('translate.es', () async {
     final buf = StringBuffer();
     await for (final t in gemma.translateStream(
@@ -382,19 +368,14 @@ Future<void> _runRobustTest(GemmaService gemma) async {
     };
   });
 
-  // 7. CONCURRENT STRESS — the exact pattern that produced the
-  //    starters-JSON-in-Q&A bug. Fire generateStarters and
-  //    askWithToolsStream nearly simultaneously and assert clean outputs.
+  // 7. Concurrent starters + Q&A (concurrent inference stress test).
   await record('concurrent.starters_and_ask', () async {
     final transcript = _splitTranscript(_testTranscript);
-    // Drop the cache so generateStarters actually runs.
     gemma.unloadChat();
     final startersFuture = gemma.generateStarters(
       lectureContext: _testTranscript,
       languageName: 'French',
     );
-    // Tiny gap then kick off Q&A — this races against starters generation
-    // and used to deliver the starters JSON as the Q&A response.
     await Future.delayed(const Duration(milliseconds: 50));
     final buf = StringBuffer();
     await for (final ev in gemma.askWithToolsStream(
@@ -416,7 +397,7 @@ Future<void> _runRobustTest(GemmaService gemma) async {
     };
   });
 
-  // 8. Generate quiz stream — must yield at least 1 valid item.
+  // 8. Generate quiz stream.
   await record('quiz.stream', () async {
     final items = <Map<String, dynamic>>[];
     await for (final q in gemma.generateQuizStream(
@@ -441,7 +422,7 @@ Future<void> _runRobustTest(GemmaService gemma) async {
     };
   });
 
-  // 9. Study pack stream — must yield at least one snapshot with summary.
+  // 9. Study pack stream.
   await record('study_pack.stream', () async {
     var sawSummary = false;
     var lastTermCount = 0;

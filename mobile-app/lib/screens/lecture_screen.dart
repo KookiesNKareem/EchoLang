@@ -26,10 +26,7 @@ class LectureScreen extends StatefulWidget {
 }
 
 class _LectureScreenState extends State<LectureScreen> {
-  // Lecture data lives in state directly (not via FutureBuilder) so reloads
-  // don't tear down the DefaultTabController. Tearing it down on every
-  // reload causes the tab index to snap back to 0 and the user momentarily
-  // sees stale content under the wrong tab.
+  /// Lecture data in state to preserve DefaultTabController across reloads.
   Lecture? _lecture;
   Object? _loadError;
   bool _translating = false;
@@ -106,13 +103,10 @@ class _LectureScreenState extends State<LectureScreen> {
         );
       }
     } catch (_) {
-      // Silent: the translate snackbar already fired; partial pack stays
-      // visible so the user can still see what landed.
+      // Partial pack still visible; user already knows translation happened.
     }
     if (!mounted) return;
-    // Reload first so the freshly-saved pack lands in [_lecture] before we
-    // flip the streaming flag. Otherwise the Study Pack tab flashes back to
-    // the old saved pack between the flag flip and the reload.
+    // Reload before clearing the flag to avoid visual flash.
     await _load();
     if (!mounted) return;
     setState(() {
@@ -169,8 +163,6 @@ class _LectureScreenState extends State<LectureScreen> {
       _translatingTo = targetCode;
       _cancelTranslation = false;
     });
-    // Let the caller animate to the Translation tab now that the live state
-    // is set up, so the user watches the tokens stream in directly.
     onStart?.call();
 
     final sourceText = lecture.transcript.map((l) => l.text).join(' ');
@@ -183,15 +175,12 @@ class _LectureScreenState extends State<LectureScreen> {
       )) {
         if (_cancelTranslation || !mounted) break;
         buf.write(token);
-        // Coalesce UI updates: rebuild ~20 fps instead of per token, so the
-        // NestedScrollView isn't re-laying-out a 6000-char text 40+ times a
-        // second.
+        // Throttle updates to ~20 fps to avoid re-layout thrashing.
         if (DateTime.now().difference(lastFlush).inMilliseconds >= 50) {
           setState(() => _streamingText = buf.toString());
           lastFlush = DateTime.now();
         }
       }
-      // Final flush so the last few tokens land.
       if (mounted) setState(() => _streamingText = buf.toString());
       if (_cancelTranslation || !mounted) {
         if (mounted) {

@@ -65,10 +65,7 @@ class _LecturesScreenState extends State<LecturesScreen> {
     });
   }
 
-  /// Show the setup banner ONLY for things the user needs to see — an
-  /// active download with a real progress percentage, or an error. On a
-  /// returning launch the model is already on disk and we're just doing the
-  /// mmap step (~10-30 s); that doesn't deserve a banner every cold start.
+  /// Show setup banner only for active downloads or errors; skip mmap on returning launch.
   bool get _showSetup {
     final gemmaError = widget.gemma.status == GemmaStatus.error;
     final whisperError = widget.whisper.status == WhisperStatus.error;
@@ -97,8 +94,6 @@ class _LecturesScreenState extends State<LecturesScreen> {
         await _renameLecture(ref);
         break;
       case 'translate':
-        // Defer to the lecture viewer's existing flow — push and let the
-        // user open the language picker there.
         await context.push('/lecture/${Uri.encodeComponent(ref.dir.path)}');
         _refresh();
         break;
@@ -743,8 +738,7 @@ class _ModelRow extends StatelessWidget {
   Widget build(BuildContext context) {
     final cs = Theme.of(context).colorScheme;
     final pct = progress != null ? '${(progress! * 100).toStringAsFixed(0)}%' : null;
-    // After download hits 100% we switch to indeterminate so the user
-    // doesn't think it's stuck — a 2.6 GB mmap can take 10-30s.
+    // After 100%, switch to indeterminate (mmap can take 10-30s).
     final indeterminate = progress == null || (progress != null && progress! >= 0.999);
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
