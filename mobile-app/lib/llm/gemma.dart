@@ -1,5 +1,3 @@
-// On-device Gemma 4 E2B via flutter_gemma (MediaPipe GenAI / LiteRT with MTP).
-
 import 'dart:convert';
 
 import 'package:flutter_gemma/flutter_gemma.dart';
@@ -8,12 +6,16 @@ import '../data/models.dart';
 
 enum GemmaStatus { notReady, downloading, ready, error }
 
-/// Localized Q&A starter content — the input-field hint and 2–3 suggested
-/// questions, generated on-device for whatever language the lecture is in.
+/// Localized Q&A starter content for whatever language the lecture is in.
 class QAStarters {
   final String hint;
+  final String subtitle;
   final List<String> questions;
-  const QAStarters({required this.hint, required this.questions});
+  const QAStarters({
+    required this.hint,
+    required this.subtitle,
+    required this.questions,
+  });
 }
 
 class GemmaBenchResult {
@@ -54,10 +56,8 @@ class GemmaService {
 
   InferenceModel? _model;
   InferenceChat? _chat;
-  // Identity of the transcript currently primed into [_chat], so we know
-  // when a fresh prime is needed vs. when we can reuse the existing chat
-  // session and skip prefilling the lecture transcript again.
   int? _primedContextHash;
+  final Map<String, Future<QAStarters>> _startersCache = {};
 
   Future<void>? _readyFuture;
   final List<void Function(double? progress, String status)> _listeners = [];
@@ -71,13 +71,7 @@ class GemmaService {
     if (_status == GemmaStatus.ready) return;
     _status = GemmaStatus.downloading;
     try {
-      // Initialize is required even without a token — flutter_gemma uses it
-      // to set up its service registry. Pass an empty string when public.
       await FlutterGemma.initialize(huggingFaceToken: hfToken.isEmpty ? null : hfToken);
-      // installModel is a no-op if the model is already on disk.
-      // fileType MUST be litertlm for our .litertlm file — flutter_gemma
-      // defaults to .task and routes through MediaPipe's parser, which
-      // would crash on init when it sees the litertlm container.
       final builder = FlutterGemma.installModel(
         modelType: ModelType.gemma4,
         fileType: ModelFileType.litertlm,
@@ -95,9 +89,6 @@ class GemmaService {
             }
           })
           .install();
-      // Download is done but model isn't usable yet — getActiveModel maps a
-      // 2.6 GB file into memory, can take 10-30s on iPhone. Broadcast a
-      // distinct status so the banner doesn't sit at 100% silently.
       _statusMessage = 'Loading Gemma 4 into memory…';
       for (final l in _listeners) {
         l(null, _statusMessage!);
@@ -120,15 +111,7 @@ class GemmaService {
     }
   }
 
-  /// Prime the chat with a lecture transcript so the ~6000-char prefill is
-  /// paid once instead of on every question. No-op if the same transcript is
-  /// already primed.
-  ///
-  /// Internally we still need to actually push the preamble through the
-  /// model to fill the KV cache — `addQueryChunk` alone just buffers
-  /// client-side, MediaPipe defers prefill until the first generate call.
-  /// We force prefill by appending a trivial "Reply with the single word
-  /// ready." prompt and discarding the answer.
+  /// Prime the chat with a lecture transcript so the prefill is paid once instead of on every question.
   Future<void> primeContext(String lectureContext) async {
     if (_status != GemmaStatus.ready || _model == null) {
       throw StateError('Gemma not ready (status=$_status)');
@@ -164,7 +147,6 @@ class GemmaService {
         case ThinkingResponse(:final content):
           yield content;
         default:
-          // Function-call responses aren't used in plain lecture Q&A; ignore.
           break;
       }
     }
@@ -218,9 +200,6 @@ class GemmaService {
     var tokenCount = 0;
     await for (final chunk in chat.generateChatResponseAsync()) {
       firstChunkAt ??= sw.elapsed;
-      // Each streamed event is one decoded token (TextResponse) or a thinking
-      // fragment we still want to time. Counting events = real token count;
-      // the chars/4 heuristic in the previous version was inflated 5-10×.
       switch (chunk) {
         case TextResponse(:final token):
           buf.write(token);
@@ -229,7 +208,6 @@ class GemmaService {
           buf.write(content);
           tokenCount += 1;
         default:
-          // Function calls etc. — rare in plain Q&A; still count as one event.
           tokenCount += 1;
       }
     }
@@ -247,32 +225,47 @@ class GemmaService {
     );
   }
 
-  /// Generate the localized Q&A starter content — input-field hint + three
-  /// suggested questions in [languageName]. Runs in a fresh chat so it does
-  /// not evict the primed lecture context.
+  /// Localized Q&A starter content for [languageName]. Cached per
+  /// (transcript-hash, language) so lecture_screen can call this to pre-warm
+  /// the starters in the background, and qa_screen later gets an instant
+  /// cache hit. Runs in a fresh chat so it does not evict the primed
+  /// lecture context.
   Future<QAStarters> generateStarters({
     required String lectureContext,
     required String languageName,
-  }) async {
+  }) {
+    final trimmed = _trimContext(lectureContext);
+    final key = '${trimmed.hashCode}|$languageName';
+    return _startersCache.putIfAbsent(
+      key,
+      () => _generateStarters(trimmed, languageName).catchError((e) {
+        _startersCache.remove(key);
+        throw e;
+      }),
+    );
+  }
+
+  Future<QAStarters> _generateStarters(String trimmed, String languageName) async {
     if (_status != GemmaStatus.ready || _model == null) {
       throw StateError('Gemma not ready (status=$_status)');
     }
-    final trimmed = _trimContext(lectureContext);
     final prompt =
         'You will be shown a lecture transcript. Generate study aids for a '
         'student about to review it. Output STRICT JSON in this exact shape, '
         'no commentary, no code fence:\n'
         '{\n'
         '  "hint": "...",\n'
+        '  "subtitle": "...",\n'
         '  "questions": ["...", "...", "..."]\n'
         '}\n\n'
-        'Rules:\n'
-        '- "hint" is a short input-field placeholder, 4-8 words, in $languageName. '
-        'Something like "Ask anything about this lecture…" but in $languageName.\n'
-        '- "questions" is exactly 3 short, specific questions a student would '
-        'ask after this lecture. Each 6-14 words. Written in $languageName.\n'
-        '- The whole JSON must be valid and contain only $languageName text '
-        'in the string values.\n\n'
+        'Rules — all string values must be written in $languageName:\n'
+        '- "hint": a short input-field placeholder, 4-8 words. Like "Ask '
+        'anything about this lecture…" but in $languageName.\n'
+        '- "subtitle": a short status line, 3-6 words. Means "Gemma 4 · on '
+        'this phone" — convey that the AI is running locally on the user\'s '
+        'device. Keep "Gemma 4" untranslated; translate only the rest.\n'
+        '- "questions": exactly 3 short specific questions a student would '
+        'ask after this lecture. Each 6-14 words.\n\n'
         'Transcript:\n"""\n$trimmed\n"""\n\nJSON:';
     final chat = await _model!.createChat();
     await chat.addQueryChunk(Message.text(text: prompt, isUser: true));
@@ -280,12 +273,13 @@ class GemmaService {
     final raw = _extractText(response);
     final json = _extractJson(raw);
     final hint = (json['hint'] as String?)?.trim() ?? 'Ask anything about this lecture…';
+    final subtitle = (json['subtitle'] as String?)?.trim() ?? 'Gemma 4 · on this phone';
     final questions = ((json['questions'] as List?) ?? const [])
         .whereType<String>()
         .map((s) => s.trim())
         .where((s) => s.isNotEmpty)
         .toList(growable: false);
-    return QAStarters(hint: hint, questions: questions);
+    return QAStarters(hint: hint, subtitle: subtitle, questions: questions);
   }
 
   /// On-device translation. Streams the translated text token-by-token.
@@ -358,8 +352,6 @@ class GemmaService {
     _chat = null;
     _primedContextHash = null;
   }
-
-  // ---- helpers ----
 
   String _extractText(dynamic response) {
     if (response is String) return response.trim();

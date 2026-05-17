@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:io';
 
 import 'package:flutter/material.dart';
@@ -36,13 +37,31 @@ class _LectureScreenState extends State<LectureScreen> {
   @override
   void initState() {
     super.initState();
-    _future = widget.store.load(Directory(widget.dirPath));
+    _future = widget.store.load(Directory(widget.dirPath))..then(_prewarm);
   }
 
   void _reload() {
     setState(() {
-      _future = widget.store.load(Directory(widget.dirPath));
+      _future = widget.store.load(Directory(widget.dirPath))..then(_prewarm);
     });
+  }
+
+  /// Kick off transcript prime + starter generation as soon as the lecture
+  /// is loaded, so by the time the user taps Ask Gemma the primed chat and
+  /// the localized hint/questions are already cached.
+  void _prewarm(Lecture lecture) {
+    if (widget.gemma.status != GemmaStatus.ready) return;
+    final ctx = lecture.transcript.map((l) => l.text).join(' ');
+    unawaited(widget.gemma.primeContext(ctx).catchError((_) {}));
+    final langName = langNames[lecture.manifest.lang] ?? 'English';
+    () async {
+      try {
+        await widget.gemma.generateStarters(
+          lectureContext: ctx,
+          languageName: langName,
+        );
+      } catch (_) {}
+    }();
   }
 
   Future<void> _translate(Lecture lecture, {VoidCallback? onStart}) async {

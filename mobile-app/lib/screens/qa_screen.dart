@@ -90,10 +90,6 @@ class _QAScreenState extends State<QAScreen> with SingleTickerProviderStateMixin
     }
   }
 
-  /// Pre-warm: kick off transcript prefill the instant lecture + Gemma are
-  /// both ready, so by the time the user finishes typing their first
-  /// question the ~6000-char prefill is already done. primeContext is
-  /// idempotent (hash-keyed) — duplicate calls are cheap.
   void _maybePrewarm() {
     if (_lecture == null) return;
     if (widget.gemma.status != GemmaStatus.ready) return;
@@ -102,9 +98,6 @@ class _QAScreenState extends State<QAScreen> with SingleTickerProviderStateMixin
     _maybeLoadStarters();
   }
 
-  /// Generate localized hint + suggested questions for the lecture's current
-  /// language. Re-runs if the lecture's lang has changed since the last
-  /// generation (e.g. after the user translated the lecture).
   void _maybeLoadStarters() {
     if (_lecture == null) return;
     if (widget.gemma.status != GemmaStatus.ready) return;
@@ -203,7 +196,7 @@ class _QAScreenState extends State<QAScreen> with SingleTickerProviderStateMixin
                 ),
                 const SizedBox(width: 6),
                 Text(
-                  _modelStatus ?? 'Gemma 4 · on this phone',
+                  _modelStatus ?? _starters?.subtitle ?? 'Gemma 4 · on this phone',
                   style: Theme.of(context).textTheme.labelSmall?.copyWith(
                         color: Colors.white.withValues(alpha: 0.55),
                       ),
@@ -227,8 +220,6 @@ class _QAScreenState extends State<QAScreen> with SingleTickerProviderStateMixin
                     itemCount: _messages.length,
                     itemBuilder: (_, i) {
                       final m = _messages[i];
-                      // Show typing dots only on the trailing empty assistant
-                      // message while we're still generating.
                       final showTyping = !m.fromUser &&
                           m.text.isEmpty &&
                           i == _messages.length - 1 &&
