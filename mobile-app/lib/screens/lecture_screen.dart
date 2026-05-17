@@ -713,135 +713,132 @@ class _LanguagePickerSheet extends StatelessWidget {
     final cs = Theme.of(context).colorScheme;
     final entries =
         langNames.entries.where((e) => e.key != 'en').toList(growable: false);
-    return DraggableScrollableSheet(
-      initialChildSize: 0.6,
-      minChildSize: 0.4,
-      maxChildSize: 0.92,
-      expand: false,
-      builder: (ctx, scrollController) {
-        return Container(
-          decoration: const BoxDecoration(
-            color: Color(0xFF15151A),
-            borderRadius: BorderRadius.vertical(top: Radius.circular(22)),
+    final screenH = MediaQuery.of(context).size.height;
+    return Container(
+      constraints: BoxConstraints(maxHeight: screenH * 0.85),
+      decoration: const BoxDecoration(
+        color: Color(0xFF15151A),
+        borderRadius: BorderRadius.vertical(top: Radius.circular(22)),
+      ),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          const SizedBox(height: 10),
+          Container(
+            width: 38, height: 4,
+            decoration: BoxDecoration(
+              color: Colors.white.withValues(alpha: 0.18),
+              borderRadius: BorderRadius.circular(2),
+            ),
           ),
-          child: Column(
-            children: [
-              const SizedBox(height: 10),
-              Container(
-                width: 38, height: 4,
-                decoration: BoxDecoration(
-                  color: Colors.white.withValues(alpha: 0.18),
-                  borderRadius: BorderRadius.circular(2),
+          Padding(
+            padding: const EdgeInsets.fromLTRB(20, 16, 20, 4),
+            child: Row(
+              children: [
+                Container(
+                  width: 36, height: 36,
+                  decoration: BoxDecoration(
+                    color: cs.primary.withValues(alpha: 0.18),
+                    borderRadius: BorderRadius.circular(10),
+                  ),
+                  child: Icon(Icons.translate_rounded,
+                      color: cs.primary, size: 20),
                 ),
-              ),
-              Padding(
-                padding: const EdgeInsets.fromLTRB(20, 16, 20, 4),
-                child: Row(
-                  children: [
-                    Container(
-                      width: 36, height: 36,
-                      decoration: BoxDecoration(
-                        color: cs.primary.withValues(alpha: 0.18),
-                        borderRadius: BorderRadius.circular(10),
-                      ),
-                      child: Icon(Icons.translate_rounded,
-                          color: cs.primary, size: 20),
-                    ),
-                    const SizedBox(width: 12),
-                    const Expanded(
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Text('Translate this lecture',
-                              style: TextStyle(
-                                  fontSize: 17, fontWeight: FontWeight.w600,
-                                  letterSpacing: -0.2)),
-                          SizedBox(height: 2),
-                          Text('Runs on this phone with Gemma 4',
-                              style: TextStyle(
-                                fontSize: 12, color: Colors.white54,
-                              )),
-                        ],
-                      ),
-                    ),
-                  ],
+                const SizedBox(width: 12),
+                const Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text('Translate this lecture',
+                          style: TextStyle(
+                              fontSize: 17, fontWeight: FontWeight.w600,
+                              letterSpacing: -0.2)),
+                      SizedBox(height: 2),
+                      Text('Runs on this phone with Gemma 4',
+                          style: TextStyle(
+                            fontSize: 12, color: Colors.white54,
+                          )),
+                    ],
+                  ),
                 ),
-              ),
-              const SizedBox(height: 8),
-              Expanded(
-                child: ListView.separated(
-                  controller: scrollController,
-                  padding: const EdgeInsets.fromLTRB(12, 4, 12, 20),
-                  itemCount: entries.length,
-                  separatorBuilder: (_, __) => const SizedBox(height: 2),
-                  itemBuilder: (_, i) {
-                    final e = entries[i];
-                    final isRtl = rtlLangs.contains(e.key);
-                    return InkWell(
-                      borderRadius: BorderRadius.circular(12),
-                      onTap: () => Navigator.of(ctx).pop(e.key),
-                      child: Padding(
-                        padding: const EdgeInsets.symmetric(
-                            horizontal: 12, vertical: 12),
-                        child: Row(
-                          children: [
-                            Container(
-                              width: 36, height: 36,
-                              alignment: Alignment.center,
-                              decoration: BoxDecoration(
-                                color: Colors.white.withValues(alpha: 0.06),
-                                borderRadius: BorderRadius.circular(10),
-                              ),
-                              child: Text(
-                                e.key.toUpperCase(),
-                                style: TextStyle(
-                                  fontSize: 11, fontWeight: FontWeight.w600,
-                                  letterSpacing: 0.4,
-                                  color: Colors.white.withValues(alpha: 0.75),
-                                ),
-                              ),
+              ],
+            ),
+          ),
+          const SizedBox(height: 8),
+          Flexible(
+            child: ListView.separated(
+              shrinkWrap: true,
+              physics: const ClampingScrollPhysics(),
+              padding: const EdgeInsets.fromLTRB(12, 4, 12, 20),
+              itemCount: entries.length,
+              separatorBuilder: (_, __) => const SizedBox(height: 2),
+              itemBuilder: (ctx, i) {
+                final e = entries[i];
+                final isRtl = rtlLangs.contains(e.key);
+                return InkWell(
+                  borderRadius: BorderRadius.circular(12),
+                  onTap: () => Navigator.of(ctx).pop(e.key),
+                  child: Padding(
+                    padding: const EdgeInsets.symmetric(
+                        horizontal: 12, vertical: 12),
+                    child: Row(
+                      children: [
+                        Container(
+                          width: 36, height: 36,
+                          alignment: Alignment.center,
+                          decoration: BoxDecoration(
+                            color: Colors.white.withValues(alpha: 0.06),
+                            borderRadius: BorderRadius.circular(10),
+                          ),
+                          child: Text(
+                            e.key.toUpperCase(),
+                            style: TextStyle(
+                              fontSize: 11, fontWeight: FontWeight.w600,
+                              letterSpacing: 0.4,
+                              color: Colors.white.withValues(alpha: 0.75),
                             ),
-                            const SizedBox(width: 14),
-                            Expanded(
-                              child: Text(
-                                e.value,
-                                style: const TextStyle(
-                                  fontSize: 15, fontWeight: FontWeight.w500,
-                                ),
-                              ),
-                            ),
-                            if (isRtl)
-                              Container(
-                                padding: const EdgeInsets.symmetric(
-                                    horizontal: 7, vertical: 2),
-                                decoration: BoxDecoration(
-                                  color: Colors.white.withValues(alpha: 0.06),
-                                  borderRadius: BorderRadius.circular(5),
-                                ),
-                                child: Text(
-                                  'RTL',
-                                  style: TextStyle(
-                                    fontSize: 10, fontWeight: FontWeight.w600,
-                                    letterSpacing: 0.5,
-                                    color: Colors.white.withValues(alpha: 0.5),
-                                  ),
-                                ),
-                              ),
-                            const SizedBox(width: 4),
-                            Icon(Icons.chevron_right_rounded,
-                                size: 18,
-                                color: Colors.white.withValues(alpha: 0.3)),
-                          ],
+                          ),
                         ),
-                      ),
-                    );
-                  },
-                ),
-              ),
-            ],
+                        const SizedBox(width: 14),
+                        Expanded(
+                          child: Text(
+                            e.value,
+                            style: const TextStyle(
+                              fontSize: 15, fontWeight: FontWeight.w500,
+                            ),
+                          ),
+                        ),
+                        if (isRtl)
+                          Container(
+                            padding: const EdgeInsets.symmetric(
+                                horizontal: 7, vertical: 2),
+                            decoration: BoxDecoration(
+                              color: Colors.white.withValues(alpha: 0.06),
+                              borderRadius: BorderRadius.circular(5),
+                            ),
+                            child: Text(
+                              'RTL',
+                              style: TextStyle(
+                                fontSize: 10, fontWeight: FontWeight.w600,
+                                letterSpacing: 0.5,
+                                color: Colors.white.withValues(alpha: 0.5),
+                              ),
+                            ),
+                          ),
+                        const SizedBox(width: 4),
+                        Icon(Icons.chevron_right_rounded,
+                            size: 18,
+                            color: Colors.white.withValues(alpha: 0.3)),
+                      ],
+                    ),
+                  ),
+                );
+              },
+            ),
           ),
-        );
-      },
+          SizedBox(height: MediaQuery.of(context).padding.bottom),
+        ],
+      ),
     );
   }
 }
