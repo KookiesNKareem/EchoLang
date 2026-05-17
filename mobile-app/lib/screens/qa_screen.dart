@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:io';
 
 import 'package:flutter/material.dart';
@@ -58,11 +59,13 @@ class _QAScreenState extends State<QAScreen> with SingleTickerProviderStateMixin
   Future<void> _loadLecture() async {
     final l = await widget.store.load(Directory(widget.dirPath));
     if (mounted) setState(() => _lecture = l);
+    _maybePrewarm();
   }
 
   Future<void> _ensureModel() async {
     if (widget.gemma.status == GemmaStatus.ready) {
       setState(() => _modelStatus = null);
+      _maybePrewarm();
       return;
     }
     setState(() => _modelStatus = 'Loading Gemma 4…');
@@ -77,9 +80,21 @@ class _QAScreenState extends State<QAScreen> with SingleTickerProviderStateMixin
         },
       );
       if (mounted) setState(() => _modelStatus = null);
+      _maybePrewarm();
     } catch (e) {
       if (mounted) setState(() => _modelStatus = 'Couldn’t load Gemma: $e');
     }
+  }
+
+  /// Pre-warm: kick off transcript prefill the instant lecture + Gemma are
+  /// both ready, so by the time the user finishes typing their first
+  /// question the ~6000-char prefill is already done. primeContext is
+  /// idempotent (hash-keyed) — duplicate calls are cheap.
+  void _maybePrewarm() {
+    if (_lecture == null) return;
+    if (widget.gemma.status != GemmaStatus.ready) return;
+    final ctx = _lecture!.transcript.map((l) => l.text).join(' ');
+    unawaited(widget.gemma.primeContext(ctx).catchError((_) {}));
   }
 
   Future<void> _send([String? prefilled]) async {
