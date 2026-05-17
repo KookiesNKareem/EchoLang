@@ -64,6 +64,10 @@ class GemmaService {
 
   InferenceModel? _model;
   InferenceChat? _chat;
+  // Identity of the transcript currently primed into [_chat], so we know
+  // when a fresh prime is needed vs. when we can reuse the existing chat
+  // session and skip prefilling the lecture transcript again.
+  int? _primedContextHash;
 
   Future<void>? _readyFuture;
   final List<void Function(double? progress, String status)> _listeners = [];
@@ -108,7 +112,10 @@ class GemmaService {
       for (final l in _listeners) {
         l(null, _statusMessage!);
       }
-      _model = await FlutterGemma.getActiveModel(maxTokens: 2048);
+      _model = await FlutterGemma.getActiveModel(
+        maxTokens: 2048,
+        preferredBackend: PreferredBackend.gpu,
+      );
       _chat = await _model!.createChat();
       _status = GemmaStatus.ready;
       _statusMessage = 'Gemma 4 ready';
@@ -123,47 +130,76 @@ class GemmaService {
     }
   }
 
-  /// Ask a question grounded in the lecture transcript. We seed a fresh chat
-  /// with a system-style instruction + transcript, then send the user
-  /// question — Gemma's chat session keeps history across calls within a
-  /// single Q&A flow.
-  Future<String> ask({required String lectureContext, required String question}) async {
+  /// Prime the chat with a lecture transcript so the ~6000-char prefill is
+  /// paid once instead of on every question. No-op if the same transcript is
+  /// already primed.
+  ///
+  /// Internally we still need to actually push the preamble through the
+  /// model to fill the KV cache — `addQueryChunk` alone just buffers
+  /// client-side, MediaPipe defers prefill until the first generate call.
+  /// We force prefill by appending a trivial "Reply with the single word
+  /// ready." prompt and discarding the answer.
+  Future<void> primeContext(String lectureContext) async {
     if (_status != GemmaStatus.ready || _model == null) {
       throw StateError('Gemma not ready (status=$_status)');
     }
     final trimmed = _trimContext(lectureContext);
+    final hash = trimmed.hashCode;
+    if (_primedContextHash == hash && _chat != null) return;
     final preamble =
         'You are a tutor helping a student review a lecture they attended. '
         'Use only what is in the transcript below. If the answer is not in '
         'the transcript, say so plainly. Reply in the same language the '
-        'student used.\n\n--- LECTURE TRANSCRIPT ---\n$trimmed\n--- END ---';
-    // Fresh chat per question keeps memory bounded; the transcript fits in
-    // context easily for typical lecture lengths.
+        'student used.\n\n--- LECTURE TRANSCRIPT ---\n$trimmed\n--- END ---\n\n'
+        'Reply with the single word ready.';
     _chat = await _model!.createChat();
     await _chat!.addQueryChunk(Message.text(text: preamble, isUser: true));
+    await _chat!.generateChatResponse();
+    _primedContextHash = hash;
+  }
+
+  /// Ask a question grounded in the lecture transcript. The first call for a
+  /// given transcript pays the prefill cost; subsequent calls within the
+  /// same session reuse the primed chat and skip re-encoding the transcript.
+  Future<String> ask({required String lectureContext, required String question}) async {
+    await primeContext(lectureContext);
     await _chat!.addQueryChunk(Message.text(text: question, isUser: true));
     final response = await _chat!.generateChatResponse();
     return _extractText(response);
   }
 
-  /// Streaming benchmark variant of [ask]. Times first-token latency and
-  /// approximate tokens/sec (chars/4 heuristic — the litertlm runtime doesn't
-  /// expose token counts directly through the flutter_gemma surface).
+  /// Streaming benchmark variant of [ask].
+  ///
+  /// When [freshChat] is true (legacy baseline): re-seeds a brand new chat
+  /// with the full preamble each call, which re-pays prefill of the
+  /// transcript every question. Used to A/B against the primed-chat path.
+  ///
+  /// When [freshChat] is false (default, prod path): primes the lecture
+  /// context once via [primeContext] and reuses the persistent chat session
+  /// for every subsequent benchAsk on the same transcript.
   Future<GemmaBenchResult> benchAsk({
     required String lectureContext,
     required String question,
+    bool freshChat = false,
   }) async {
     if (_status != GemmaStatus.ready || _model == null) {
       throw StateError('Gemma not ready (status=$_status)');
     }
-    final trimmed = _trimContext(lectureContext);
-    final preamble =
-        'You are a tutor helping a student review a lecture they attended. '
-        'Use only what is in the transcript below. If the answer is not in '
-        'the transcript, say so plainly.\n\n--- LECTURE TRANSCRIPT ---\n$trimmed\n--- END ---';
-    final chat = await _model!.createChat();
-    await chat.addQueryChunk(Message.text(text: preamble, isUser: true));
-    await chat.addQueryChunk(Message.text(text: question, isUser: true));
+    final InferenceChat chat;
+    if (freshChat) {
+      final trimmed = _trimContext(lectureContext);
+      final preamble =
+          'You are a tutor helping a student review a lecture they attended. '
+          'Use only what is in the transcript below. If the answer is not in '
+          'the transcript, say so plainly.\n\n--- LECTURE TRANSCRIPT ---\n$trimmed\n--- END ---';
+      chat = await _model!.createChat();
+      await chat.addQueryChunk(Message.text(text: preamble, isUser: true));
+      await chat.addQueryChunk(Message.text(text: question, isUser: true));
+    } else {
+      await primeContext(lectureContext);
+      chat = _chat!;
+      await chat.addQueryChunk(Message.text(text: question, isUser: true));
+    }
 
     final sw = Stopwatch()..start();
     Duration? firstChunkAt;
@@ -228,10 +264,18 @@ class GemmaService {
 
   void unload() {
     _chat = null;
+    _primedContextHash = null;
     _model?.close();
     _model = null;
     _readyFuture = null;
     _status = GemmaStatus.notReady;
+  }
+
+  /// Drop the current chat session but keep the loaded model. Forces the
+  /// next ask/benchAsk to re-prime its context from scratch.
+  void unloadChat() {
+    _chat = null;
+    _primedContextHash = null;
   }
 
   // ---- helpers ----

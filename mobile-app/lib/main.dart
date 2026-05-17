@@ -113,54 +113,69 @@ Future<void> _runAutoBench(GemmaService gemma) async {
     } catch (_) {}
   }
 
-  log('autobench enabled=$kAutoBench');
-  log('start');
-  // Warm-up: first generation pays one-time costs (graph compile etc.).
-  try {
-    log('warmup begin');
-    final warm = await gemma.benchAsk(
-      lectureContext: _benchContext,
-      question: 'Reply with the single word ok.',
-    );
-    final w = {
-      'phase': 'warmup',
-      'first_token_ms': warm.firstTokenLatency.inMilliseconds,
-      'total_ms': warm.totalDuration.inMilliseconds,
-      'tokens': warm.approxTokens,
-      'tps': double.parse(warm.tokensPerSec.toStringAsFixed(2)),
-      'output': warm.output,
-    };
-    trials.add(w);
-    log('warmup first_token_ms=${w['first_token_ms']} '
-        'total_ms=${w['total_ms']} tokens=${w['tokens']} tps=${w['tps']}');
-  } catch (e) {
-    log('warmup error: $e');
-    await flush();
-    log('done');
-    return;
-  }
-  for (var i = 0; i < _benchQuestions.length; i++) {
-    final q = _benchQuestions[i];
+  Future<void> runMode({required String mode, required bool freshChat}) async {
+    log('mode=$mode begin');
     try {
-      final r = await gemma.benchAsk(lectureContext: _benchContext, question: q);
-      final t = {
-        'phase': 'trial',
-        'index': i,
-        'question': q,
-        'first_token_ms': r.firstTokenLatency.inMilliseconds,
-        'total_ms': r.totalDuration.inMilliseconds,
-        'tokens': r.approxTokens,
-        'tps': double.parse(r.tokensPerSec.toStringAsFixed(2)),
-        'output': r.output,
+      final warm = await gemma.benchAsk(
+        lectureContext: _benchContext,
+        question: 'Reply with the single word ok.',
+        freshChat: freshChat,
+      );
+      final w = {
+        'phase': 'warmup',
+        'mode': mode,
+        'first_token_ms': warm.firstTokenLatency.inMilliseconds,
+        'total_ms': warm.totalDuration.inMilliseconds,
+        'tokens': warm.approxTokens,
+        'tps': double.parse(warm.tokensPerSec.toStringAsFixed(2)),
+        'output': warm.output,
       };
-      trials.add(t);
-      log('trial=$i first_token_ms=${t['first_token_ms']} '
-          'total_ms=${t['total_ms']} tokens=${t['tokens']} tps=${t['tps']}');
+      trials.add(w);
+      log('mode=$mode warmup first_token_ms=${w['first_token_ms']} '
+          'total_ms=${w['total_ms']} tokens=${w['tokens']} tps=${w['tps']}');
       await flush();
     } catch (e) {
-      log('trial=$i error: $e');
+      log('mode=$mode warmup error: $e');
+      await flush();
+      return;
+    }
+    for (var i = 0; i < _benchQuestions.length; i++) {
+      final q = _benchQuestions[i];
+      try {
+        final r = await gemma.benchAsk(
+          lectureContext: _benchContext,
+          question: q,
+          freshChat: freshChat,
+        );
+        final t = {
+          'phase': 'trial',
+          'mode': mode,
+          'index': i,
+          'question': q,
+          'first_token_ms': r.firstTokenLatency.inMilliseconds,
+          'total_ms': r.totalDuration.inMilliseconds,
+          'tokens': r.approxTokens,
+          'tps': double.parse(r.tokensPerSec.toStringAsFixed(2)),
+          'output': r.output,
+        };
+        trials.add(t);
+        log('mode=$mode trial=$i first_token_ms=${t['first_token_ms']} '
+            'total_ms=${t['total_ms']} tokens=${t['tokens']} tps=${t['tps']}');
+        await flush();
+      } catch (e) {
+        log('mode=$mode trial=$i error: $e');
+      }
     }
   }
+
+  log('autobench enabled=$kAutoBench');
+  log('start');
+  // Baseline = fresh chat each call (re-prefill transcript every question).
+  await runMode(mode: 'fresh', freshChat: true);
+  // Drop the cached chat so primed path starts clean.
+  gemma.unloadChat();
+  // Optimized = prime once, reuse session.
+  await runMode(mode: 'primed', freshChat: false);
   log('results_path=${out.path}');
   await flush();
   log('done');
