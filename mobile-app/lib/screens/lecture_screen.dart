@@ -301,6 +301,30 @@ class _LectureScreenState extends State<LectureScreen> {
                     ),
           ),
         ),
+        PopupMenuButton<String>(
+          tooltip: 'More',
+          icon: const Icon(Icons.more_vert_rounded),
+          enabled: !_packStreaming,
+          onSelected: (v) {
+            if (v == 'regen_pack') {
+              final code = lecture.manifest.lang;
+              final name = langNames[code] ?? 'English';
+              _regenStudyPack(lecture, code, name);
+            }
+          },
+          itemBuilder: (_) => const [
+            PopupMenuItem(
+              value: 'regen_pack',
+              child: Row(
+                children: [
+                  Icon(Icons.auto_fix_high_rounded, size: 18),
+                  SizedBox(width: 12),
+                  Text('Regenerate study pack'),
+                ],
+              ),
+            ),
+          ],
+        ),
       ],
       flexibleSpace: FlexibleSpaceBar(
         titlePadding: const EdgeInsets.fromLTRB(56, 0, 56, 16),
@@ -352,6 +376,7 @@ class _HeaderBackground extends StatelessWidget {
             spacing: 8, runSpacing: 6,
             children: [
               _Chip(icon: Icons.language_rounded, label: m.lang.toUpperCase()),
+              _Chip(icon: Icons.calendar_today_rounded, label: _fmtLectureDate(m.startedAt)),
               _Chip(icon: Icons.access_time_rounded, label: _fmtDuration(duration)),
               _Chip(icon: Icons.format_quote_rounded, label: '${m.captionCount} captions'),
               if (m.teacher != null && m.teacher!.isNotEmpty)
@@ -367,6 +392,25 @@ class _HeaderBackground extends StatelessWidget {
     if (d.inMinutes < 1) return '${d.inSeconds}s';
     if (d.inHours < 1) return '${d.inMinutes}m';
     return '${d.inHours}h ${d.inMinutes % 60}m';
+  }
+
+  String _fmtLectureDate(DateTime t) {
+    final local = t.toLocal();
+    final now = DateTime.now();
+    final today = DateTime(now.year, now.month, now.day);
+    final that = DateTime(local.year, local.month, local.day);
+    final diff = today.difference(that).inDays;
+    if (diff == 0) return 'Today';
+    if (diff == 1) return 'Yesterday';
+    if (diff < 7) return '$diff days ago';
+    const months = [
+      'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
+      'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec',
+    ];
+    final showYear = local.year != now.year;
+    return showYear
+        ? '${months[local.month - 1]} ${local.day}, ${local.year}'
+        : '${months[local.month - 1]} ${local.day}';
   }
 }
 
