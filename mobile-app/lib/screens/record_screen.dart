@@ -198,22 +198,23 @@ class _RecordScreenState extends State<RecordScreen> with SingleTickerProviderSt
                   ),
                 ),
               ],
-              const SizedBox(height: 24),
+              const SizedBox(height: 16),
               Expanded(
-                child: Center(
-                  child: switch (_phase) {
-                    _Phase.recording => _RecordingIndicator(
-                        elapsed: _elapsed,
-                        fmt: _fmt,
-                        pulse: _pulse,
-                        livePartial: widget.whisper.supportsLiveCaptions ? _livePartial : null,
-                      ),
-                    _Phase.transcribing || _Phase.summarizing =>
-                      _ProcessingIndicator(message: _statusMsg ?? 'Working…'),
-                    _Phase.error => _ErrorIndicator(message: _statusMsg ?? 'Something went wrong'),
-                    _ => _IdleHint(color: cs.primary),
-                  },
-                ),
+                child: switch (_phase) {
+                  _Phase.recording => _RecordingView(
+                      elapsed: _elapsed,
+                      fmt: _fmt,
+                      pulse: _pulse,
+                      livePartial: widget.whisper.supportsLiveCaptions ? _livePartial : null,
+                      backendLabel: widget.whisper.hasNativeBackend
+                          ? 'iOS Speech · on-device'
+                          : 'Whisper · fallback',
+                    ),
+                  _Phase.transcribing || _Phase.summarizing =>
+                    Center(child: _ProcessingIndicator(message: _statusMsg ?? 'Working…')),
+                  _Phase.error => Center(child: _ErrorIndicator(message: _statusMsg ?? 'Something went wrong')),
+                  _ => Center(child: _IdleHint(color: cs.primary)),
+                },
               ),
               const SizedBox(height: 16),
               if (_phase == _Phase.idle) ...[
@@ -267,82 +268,145 @@ class _IdleHint extends StatelessWidget {
   }
 }
 
-class _RecordingIndicator extends StatelessWidget {
+class _RecordingView extends StatelessWidget {
   final Duration elapsed;
   final String Function(Duration) fmt;
   final AnimationController pulse;
-  final String? livePartial; // null when backend doesn't stream partials
-  const _RecordingIndicator({
+  final String? livePartial;
+  final String backendLabel;
+  const _RecordingView({
     required this.elapsed,
     required this.fmt,
     required this.pulse,
+    required this.backendLabel,
     this.livePartial,
   });
 
+  int get _wordCount {
+    final t = livePartial?.trim();
+    if (t == null || t.isEmpty) return 0;
+    return t.split(RegExp(r'\s+')).length;
+  }
+
   @override
   Widget build(BuildContext context) {
+    final hasText = livePartial != null && livePartial!.trim().isNotEmpty;
     return Column(
-      mainAxisSize: MainAxisSize.min,
+      crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-        AnimatedBuilder(
-          animation: pulse,
-          builder: (_, __) {
-            final t = pulse.value;
-            return Stack(
-              alignment: Alignment.center,
-              children: [
-                Container(
-                  width: 160 + 40 * t, height: 160 + 40 * t,
-                  decoration: BoxDecoration(
-                    shape: BoxShape.circle,
-                    color: const Color(0xFFE53935).withValues(alpha: 0.10 * (1 - t)),
-                  ),
-                ),
-                Container(
-                  width: 140, height: 140,
-                  decoration: const BoxDecoration(
-                    color: Color(0xFFE53935), shape: BoxShape.circle,
-                  ),
-                  child: const Icon(Icons.mic_rounded, size: 64, color: Colors.white),
-                ),
-              ],
-            );
-          },
-        ),
-        const SizedBox(height: 24),
-        Text(
-          fmt(elapsed),
-          style: const TextStyle(
-            fontSize: 36, fontWeight: FontWeight.w300,
-            fontFeatures: [FontFeature.tabularFigures()],
-            letterSpacing: 1,
-          ),
-        ),
-        const SizedBox(height: 8),
-        Text(
-          livePartial != null && livePartial!.isNotEmpty ? 'Listening…' : 'Recording…',
-          style: TextStyle(color: Colors.white.withValues(alpha: 0.5)),
-        ),
-        if (livePartial != null && livePartial!.isNotEmpty) ...[
-          const SizedBox(height: 24),
-          Container(
-            constraints: const BoxConstraints(maxHeight: 160),
-            margin: const EdgeInsets.symmetric(horizontal: 8),
-            padding: const EdgeInsets.all(16),
-            decoration: BoxDecoration(
-              color: Colors.white.withValues(alpha: 0.04),
-              borderRadius: BorderRadius.circular(12),
+        // Compact pulse header — keeps the mic visible without dominating.
+        Row(
+          children: [
+            AnimatedBuilder(
+              animation: pulse,
+              builder: (_, __) {
+                final t = pulse.value;
+                return Stack(
+                  alignment: Alignment.center,
+                  children: [
+                    Container(
+                      width: 60 + 16 * t, height: 60 + 16 * t,
+                      decoration: BoxDecoration(
+                        shape: BoxShape.circle,
+                        color: const Color(0xFFE53935).withValues(alpha: 0.18 * (1 - t)),
+                      ),
+                    ),
+                    Container(
+                      width: 56, height: 56,
+                      decoration: const BoxDecoration(
+                        color: Color(0xFFE53935), shape: BoxShape.circle,
+                      ),
+                      child: const Icon(Icons.mic_rounded, size: 26, color: Colors.white),
+                    ),
+                  ],
+                );
+              },
             ),
-            child: SingleChildScrollView(
-              reverse: true,
-              child: Text(
-                livePartial!,
-                style: const TextStyle(fontSize: 16, height: 1.4),
-                textAlign: TextAlign.center,
+            const SizedBox(width: 16),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    fmt(elapsed),
+                    style: const TextStyle(
+                      fontSize: 32, fontWeight: FontWeight.w300,
+                      fontFeatures: [FontFeature.tabularFigures()],
+                      letterSpacing: 1,
+                      height: 1.0,
+                    ),
+                  ),
+                  const SizedBox(height: 4),
+                  Row(
+                    children: [
+                      Container(
+                        width: 6, height: 6,
+                        decoration: const BoxDecoration(
+                          shape: BoxShape.circle,
+                          color: Color(0xFF7AE0A0),
+                        ),
+                      ),
+                      const SizedBox(width: 6),
+                      Flexible(
+                        child: Text(
+                          backendLabel,
+                          maxLines: 1, overflow: TextOverflow.ellipsis,
+                          style: TextStyle(
+                            fontSize: 12,
+                            color: Colors.white.withValues(alpha: 0.55),
+                          ),
+                        ),
+                      ),
+                      if (hasText) ...[
+                        const SizedBox(width: 8),
+                        Text(
+                          '· $_wordCount words',
+                          style: TextStyle(
+                            fontSize: 12,
+                            color: Colors.white.withValues(alpha: 0.45),
+                          ),
+                        ),
+                      ],
+                    ],
+                  ),
+                ],
               ),
             ),
+          ],
+        ),
+        const SizedBox(height: 16),
+        // Live transcript fills the rest of the screen so the user can SEE
+        // every word land. Empty state explains why nothing is showing yet.
+        Expanded(
+          child: Container(
+            padding: const EdgeInsets.all(14),
+            decoration: BoxDecoration(
+              color: Colors.white.withValues(alpha: 0.03),
+              borderRadius: BorderRadius.circular(14),
+              border: Border.all(color: Colors.white.withValues(alpha: 0.06)),
+            ),
+            child: hasText
+                ? SingleChildScrollView(
+                    reverse: true,
+                    child: Text(
+                      livePartial!,
+                      style: const TextStyle(fontSize: 16, height: 1.5),
+                    ),
+                  )
+                : Center(
+                    child: Text(
+                      livePartial == null
+                          ? 'Live transcription not available on this backend.\nSpeech will be transcribed when you stop.'
+                          : 'Listening…',
+                      textAlign: TextAlign.center,
+                      style: TextStyle(
+                        fontSize: 14, height: 1.5,
+                        color: Colors.white.withValues(alpha: 0.45),
+                      ),
+                    ),
+                  ),
           ),
-        ],
+        ),
       ],
     );
   }
