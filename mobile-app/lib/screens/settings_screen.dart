@@ -204,6 +204,60 @@ class _SettingsScreenState extends State<SettingsScreen> {
                         sub: _whisperStatus(),
                         active: widget.whisper.status == WhisperStatus.ready,
                       ),
+                      if (widget.whisper.status == WhisperStatus.ready &&
+                          !widget.whisper.hasNativeBackend) ...[
+                        const Divider(height: 1),
+                        InkWell(
+                          onTap: () async {
+                            HapticFeedback.selectionClick();
+                            ScaffoldMessenger.of(context).showSnackBar(
+                              const SnackBar(content: Text('Re-checking native speech recognition…')),
+                            );
+                            await widget.whisper.retryNativeInit();
+                            if (!context.mounted) return;
+                            setState(() {});
+                            ScaffoldMessenger.of(context).showSnackBar(
+                              SnackBar(
+                                content: Text(widget.whisper.hasNativeBackend
+                                    ? 'Switched to native iOS Speech.'
+                                    : 'Still on Whisper. Check Settings → Privacy → Speech Recognition for EchoLang.'),
+                              ),
+                            );
+                          },
+                          child: Padding(
+                            padding: const EdgeInsets.all(16),
+                            child: Row(
+                              children: [
+                                Icon(Icons.refresh_rounded,
+                                    color: cs.primary, size: 18),
+                                const SizedBox(width: 12),
+                                Expanded(
+                                  child: Column(
+                                    crossAxisAlignment: CrossAxisAlignment.start,
+                                    children: [
+                                      Text(
+                                        'Try native iOS Speech again',
+                                        style: TextStyle(
+                                          fontSize: 14, fontWeight: FontWeight.w500,
+                                          color: cs.primary,
+                                        ),
+                                      ),
+                                      const SizedBox(height: 2),
+                                      Text(
+                                        "If you flipped on Speech Recognition in iOS Settings, tap to re-check.",
+                                        style: TextStyle(
+                                          fontSize: 11.5,
+                                          color: Colors.white.withValues(alpha: 0.55),
+                                        ),
+                                      ),
+                                    ],
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+                        ),
+                      ],
                     ],
                   ),
                 ),

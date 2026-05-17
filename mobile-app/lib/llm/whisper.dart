@@ -37,6 +37,21 @@ class WhisperService {
     return _readyFuture ??= _load();
   }
 
+  /// Force a fresh attempt at native speech-recognition initialization. Used
+  /// by the Settings "Retry permission" button: if the user originally
+  /// denied the iOS Speech Recognition prompt and has since flipped it on
+  /// in Settings, this re-checks without restarting the app.
+  Future<void> retryNativeInit() async {
+    _readyFuture = null;
+    _status = WhisperStatus.notReady;
+    _backend = null;
+    _statusMessage = null;
+    return ensureReady();
+  }
+
+  /// True when the active backend is the on-device iOS Speech framework.
+  bool get hasNativeBackend => _backend == SpeechBackend.native;
+
   Future<void> _load() async {
     if (_status == WhisperStatus.ready) return;
     _status = WhisperStatus.downloading;
