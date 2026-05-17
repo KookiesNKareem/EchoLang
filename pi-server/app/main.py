@@ -59,7 +59,6 @@ async def lifespan(app: FastAPI):
     global translator, worker
     translator = make_translator()
     log.info("translator backend: %s", type(translator).__name__)
-    # Pre-load the model so the first real translation doesn't pay cold-start.
     if hasattr(translator, "warm_up"):
         log.info("warming up translator (this can take ~90s on first boot)…")
         await asyncio.to_thread(translator.warm_up)
