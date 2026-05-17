@@ -6,7 +6,6 @@ import 'package:flutter/services.dart';
 
 import '../data/bundle_store.dart';
 import '../data/models.dart';
-import '../data/preferences.dart';
 import '../llm/gemma.dart';
 
 class QAScreen extends StatefulWidget {
@@ -41,13 +40,11 @@ class _QAScreenState extends State<QAScreen> with SingleTickerProviderStateMixin
   bool _generating = false;
   bool _cancelGeneration = false;
   String? _modelStatus;
-  /// Cached starters per language. We pre-load both the lecture's language
-  /// AND English so the toggle in the app bar switches instantly.
-  final Map<String, QAStarters> _startersByLang = {};
-  final Set<String> _startersLoadingFor = {};
-  /// User-selected language for Q&A localization. Null = follow the
-  /// lecture's manifest lang.
-  String? _displayLang;
+  /// Static QA starter content. We previously generated per-lecture
+  /// localized starters via the model, but that prompt anchored the
+  /// model into a JSON-output format on iOS, leaking into subsequent
+  /// Q&A turns. See [QAStarters.fallback] for the reasoning.
+  final QAStarters _starters = QAStarters.fallback;
 
   @override
   void initState() {
@@ -106,40 +103,9 @@ class _QAScreenState extends State<QAScreen> with SingleTickerProviderStateMixin
     _maybeLoadStarters();
   }
 
-  /// Pre-load starters for the lecture's language AND English so the
-  /// app-bar toggle can flip between them instantly.
-  void _maybeLoadStarters() {
-    if (_lecture == null) return;
-    if (widget.gemma.status != GemmaStatus.ready) return;
-    final lectureLang = _lecture!.manifest.lang;
-    _loadStartersFor(lectureLang);
-    if (lectureLang != 'en') _loadStartersFor('en');
-  }
-
-  Future<void> _loadStartersFor(String lang) async {
-    if (_startersByLang.containsKey(lang)) return;
-    if (_startersLoadingFor.contains(lang)) return;
-    _startersLoadingFor.add(lang);
-    final ctx = _lecture!.transcript.map((l) => l.text).join(' ');
-    final langName = langNames[lang] ?? 'English';
-    try {
-      final s = await widget.gemma.generateStarters(
-        lectureContext: ctx,
-        languageName: langName,
-      );
-      if (!mounted) return;
-      setState(() {
-        _startersByLang[lang] = s;
-        _startersLoadingFor.remove(lang);
-      });
-    } catch (_) {
-      if (!mounted) return;
-      setState(() => _startersLoadingFor.remove(lang));
-    }
-  }
-
-  String get _activeLang => _displayLang ?? _lecture?.manifest.lang ?? 'en';
-  QAStarters? get _activeStarters => _startersByLang[_activeLang];
+  /// No-op now; we use the static QAStarters.fallback. Kept as a method so
+  /// _maybePrewarm doesn't need restructuring.
+  void _maybeLoadStarters() {}
 
   Future<void> _send([String? prefilled]) async {
     final q = (prefilled ?? _input.text).trim();
@@ -218,8 +184,6 @@ class _QAScreenState extends State<QAScreen> with SingleTickerProviderStateMixin
   @override
   Widget build(BuildContext context) {
     final cs = Theme.of(context).colorScheme;
-    final lectureLang = _lecture?.manifest.lang ?? 'en';
-    final showLangToggle = lectureLang != 'en';
     return Scaffold(
       appBar: AppBar(
         title: Column(
@@ -244,7 +208,7 @@ class _QAScreenState extends State<QAScreen> with SingleTickerProviderStateMixin
                 ),
                 const SizedBox(width: 6),
                 Text(
-                  _modelStatus ?? _activeStarters?.subtitle ?? 'Gemma 4 · on this phone',
+                  _modelStatus ?? _starters.subtitle,
                   style: Theme.of(context).textTheme.labelSmall?.copyWith(
                         color: Colors.white.withValues(alpha: 0.55),
                       ),
@@ -253,28 +217,12 @@ class _QAScreenState extends State<QAScreen> with SingleTickerProviderStateMixin
             ),
           ],
         ),
-        actions: [
-          if (showLangToggle)
-            Padding(
-              padding: const EdgeInsets.only(right: 12),
-              child: Center(
-                child: _LanguageToggle(
-                  codes: ['en', lectureLang],
-                  selected: _activeLang,
-                  onChange: (code) {
-                    HapticFeedback.selectionClick();
-                    setState(() => _displayLang = code);
-                  },
-                ),
-              ),
-            ),
-        ],
       ),
       body: Column(
         children: [
           Expanded(
             child: _messages.isEmpty
-                ? _Welcome(starters: _activeStarters)
+                ? _Welcome(starters: _starters)
                 : ListView.builder(
                     controller: _scroll,
                     padding: const EdgeInsets.fromLTRB(16, 16, 16, 8),
@@ -293,18 +241,16 @@ class _QAScreenState extends State<QAScreen> with SingleTickerProviderStateMixin
                     },
                   ),
           ),
-          if (_activeStarters != null &&
-              _activeStarters!.questions.isNotEmpty &&
-              _messages.isEmpty)
+          if (_starters.questions.isNotEmpty && _messages.isEmpty)
             _SuggestionRow(
-              questions: _activeStarters!.questions,
+              questions: _starters.questions,
               onPick: _send,
             ),
           _Composer(
             controller: _input,
             enabled: !_generating && widget.gemma.status == GemmaStatus.ready,
             generating: _generating,
-            hintText: _activeStarters?.hint,
+            hintText: _starters.hint,
             onSubmit: () => _send(),
             onStop: _stop,
           ),
@@ -429,7 +375,9 @@ class _BubbleState extends State<_Bubble> with SingleTickerProviderStateMixin {
                   constraints: BoxConstraints(maxWidth: MediaQuery.of(context).size.width * 0.85),
                   child: _ReasoningPanel(thinking: m.thinking),
                 ),
-              if (!m.fromUser && m.text.trim().isNotEmpty)
+              if (!m.fromUser && m.text.trim().isNotEmpty &&
+                  (_isOffTopic(m.text) ||
+                      m.citations.any((c) => c.result['found'] == true)))
                 _GroundingChip(message: m),
               Align(
                 alignment: align,
@@ -741,55 +689,6 @@ class _TypingDots extends StatelessWidget {
             children: [dot(0), dot(1), dot(2)],
           );
         },
-      ),
-    );
-  }
-}
-
-class _LanguageToggle extends StatelessWidget {
-  final List<String> codes;
-  final String selected;
-  final void Function(String) onChange;
-  const _LanguageToggle({
-    required this.codes,
-    required this.selected,
-    required this.onChange,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    final cs = Theme.of(context).colorScheme;
-    return Container(
-      padding: const EdgeInsets.all(2),
-      decoration: BoxDecoration(
-        color: cs.surfaceContainerHighest.withValues(alpha: 0.6),
-        borderRadius: BorderRadius.circular(999),
-        border: Border.all(color: Colors.white.withValues(alpha: 0.08)),
-      ),
-      child: Row(
-        mainAxisSize: MainAxisSize.min,
-        children: codes.map((c) {
-          final isSel = c == selected;
-          return GestureDetector(
-            onTap: isSel ? null : () => onChange(c),
-            child: AnimatedContainer(
-              duration: const Duration(milliseconds: 160),
-              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 5),
-              decoration: BoxDecoration(
-                color: isSel ? cs.primary : Colors.transparent,
-                borderRadius: BorderRadius.circular(999),
-              ),
-              child: Text(
-                c.toUpperCase(),
-                style: TextStyle(
-                  fontSize: 11, fontWeight: FontWeight.w700,
-                  letterSpacing: 0.4,
-                  color: isSel ? cs.onPrimary : Colors.white.withValues(alpha: 0.7),
-                ),
-              ),
-            ),
-          );
-        }).toList(),
       ),
     );
   }

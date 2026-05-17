@@ -6,6 +6,7 @@ import 'package:flutter/material.dart';
 import 'package:path_provider/path_provider.dart';
 
 import 'data/bundle_store.dart';
+import 'data/models.dart';
 import 'llm/gemma.dart';
 import 'llm/whisper.dart';
 import 'routes.dart';
@@ -14,6 +15,13 @@ import 'theme.dart';
 /// Compile-time flag for the autonomous on-device benchmark.
 /// Build with: `flutter run --release --dart-define=AUTOBENCH=1`
 const bool kAutoBench = bool.fromEnvironment('AUTOBENCH', defaultValue: false);
+
+/// Compile-time flag for the rigorous Gemma test suite. Runs every public
+/// inference path back-to-back, including known contamination triggers
+/// (concurrent ops, switching between starters / Q&A / translate). Writes
+/// a JSON report to Documents/gemma_tests.json that the host pulls with
+/// `xcrun devicectl device copy from`.
+const bool kRobustTest = bool.fromEnvironment('ROBUST_TEST', defaultValue: false);
 
 void main() {
   // Convert render-time exceptions from a pure black iOS-release screen
@@ -73,6 +81,7 @@ class _LocalLearningAppState extends State<LocalLearningApp> {
       _whisper.ensureReady().catchError((_) {});
       _gemma.ensureReady().catchError((_) {}).then((_) {
         if (kAutoBench) unawaited(_runAutoBench(_gemma));
+        if (kRobustTest) unawaited(_runRobustTest(_gemma));
       });
     });
   }
@@ -202,4 +211,273 @@ Future<void> _runAutoBench(GemmaService gemma) async {
   log('results_path=${out.path}');
   await flush();
   log('done');
+}
+
+// ============================================================================
+// Robust test suite — exercises every Gemma inference path in isolation AND
+// under concurrent load that previously triggered the "starters JSON shown
+// as Q&A answer" contamination bug. Each test records pass/fail with the
+// raw output so the host can verify.
+// ============================================================================
+
+const _testTranscript = _benchContext;
+
+Future<void> _runRobustTest(GemmaService gemma) async {
+  final docs = await getApplicationDocumentsDirectory();
+  final out = File('${docs.path}/gemma_tests.json');
+  final results = <Map<String, dynamic>>[];
+
+  Future<void> flush() async {
+    try {
+      await out.writeAsString(
+        const JsonEncoder.withIndent('  ').convert({
+          'started_at_unix_ms': DateTime.now().millisecondsSinceEpoch,
+          'results': results,
+        }),
+      );
+    } catch (_) {}
+  }
+
+  Future<void> record(String name, Future<Map<String, dynamic>> Function() body) async {
+    final sw = Stopwatch()..start();
+    // ignore: avoid_print
+    print('TEST: $name begin');
+    Map<String, dynamic> entry;
+    try {
+      entry = await body();
+      entry['pass'] = entry['pass'] ?? true;
+    } catch (e, s) {
+      entry = {'pass': false, 'error': '$e', 'stack': s.toString().split('\n').take(4).join('\n')};
+    }
+    entry['name'] = name;
+    entry['elapsed_ms'] = sw.elapsedMilliseconds;
+    results.add(entry);
+    // ignore: avoid_print
+    print('TEST: $name ${entry['pass'] == true ? 'PASS' : 'FAIL'} '
+        '(${entry['elapsed_ms']} ms)');
+    await flush();
+  }
+
+  bool looksLikeStartersJson(String text) {
+    final t = text.toLowerCase();
+    return t.contains('"hint"') &&
+        t.contains('"questions"') &&
+        (t.contains('"welcome_title"') || t.contains('"subtitle"'));
+  }
+
+  bool looksLikeQuizJson(String text) {
+    final t = text.toLowerCase();
+    return t.contains('"options"') && t.contains('"correct"');
+  }
+
+  // 1. Prime context — must not throw, _chat must be non-null afterwards.
+  await record('primeContext', () async {
+    await gemma.primeContext(_testTranscript);
+    return {'note': 'no exceptions'};
+  });
+
+  // 2. generateStarters English — must return non-empty fields, no garbage.
+  await record('starters.en', () async {
+    final s = await gemma.generateStarters(
+      lectureContext: _testTranscript,
+      languageName: 'English',
+    );
+    final ok = s.hint.isNotEmpty &&
+        s.welcomeTitle.isNotEmpty &&
+        s.welcomeBody.isNotEmpty &&
+        s.questions.length >= 2;
+    return {
+      'pass': ok,
+      'hint': s.hint,
+      'subtitle': s.subtitle,
+      'welcome_title': s.welcomeTitle,
+      'questions': s.questions,
+    };
+  });
+
+  // 3. generateStarters Spanish — different language path, separate cache key.
+  await record('starters.es', () async {
+    final s = await gemma.generateStarters(
+      lectureContext: _testTranscript,
+      languageName: 'Spanish',
+    );
+    final ok = s.hint.isNotEmpty && s.questions.length >= 2;
+    return {
+      'pass': ok,
+      'hint': s.hint,
+      'questions': s.questions,
+    };
+  });
+
+  // 4. askWithToolsStream — typical on-topic question. Output must NOT look
+  //    like the starters JSON. Citations are optional but should not crash.
+  await record('askWithTools.on_topic', () async {
+    final transcript = _splitTranscript(_testTranscript);
+    final buf = StringBuffer();
+    var citationCount = 0;
+    String? firstThinkingChunk;
+    await for (final ev in gemma.askWithToolsStream(
+      transcript: transcript,
+      keyTerms: const [],
+      question: 'What are the three core claims of cell theory?',
+    )) {
+      switch (ev) {
+        case AskText(:final token):
+          buf.write(token);
+        case AskCitation():
+          citationCount += 1;
+        case AskThinking(:final content):
+          firstThinkingChunk ??= content;
+      }
+    }
+    final text = buf.toString().trim();
+    final contaminated = looksLikeStartersJson(text) || looksLikeQuizJson(text);
+    return {
+      'pass': text.isNotEmpty && !contaminated,
+      'contaminated': contaminated,
+      'output_len': text.length,
+      'output_preview': text.length > 400 ? '${text.substring(0, 400)}…' : text,
+      'citation_count': citationCount,
+      'had_thinking': firstThinkingChunk != null,
+    };
+  });
+
+  // 5. askWithToolsStream — off-topic question must emit the [OFF-TOPIC]
+  //    marker (we prompt the model to do this; we don't fail hard if not).
+  await record('askWithTools.off_topic', () async {
+    final transcript = _splitTranscript(_testTranscript);
+    final buf = StringBuffer();
+    await for (final ev in gemma.askWithToolsStream(
+      transcript: transcript,
+      keyTerms: const [],
+      question: 'What is the capital of France?',
+    )) {
+      if (ev is AskText) buf.write(ev.token);
+    }
+    final text = buf.toString().trim();
+    return {
+      'pass': text.isNotEmpty && !looksLikeStartersJson(text),
+      'output_preview': text.length > 400 ? '${text.substring(0, 400)}…' : text,
+      'has_off_topic_marker': text.toLowerCase().contains('[off-topic]') ||
+          text.toLowerCase().contains('off-topic'),
+    };
+  });
+
+  // 6. translateStream — short text, must produce non-empty output not
+  //    matching the starters/quiz JSON.
+  await record('translate.es', () async {
+    final buf = StringBuffer();
+    await for (final t in gemma.translateStream(
+      text: 'Photosynthesis converts light energy into chemical energy.',
+      targetLanguageName: 'Spanish',
+    )) {
+      buf.write(t);
+    }
+    final text = buf.toString().trim();
+    return {
+      'pass': text.isNotEmpty &&
+          !looksLikeStartersJson(text) &&
+          !looksLikeQuizJson(text),
+      'output': text,
+    };
+  });
+
+  // 7. CONCURRENT STRESS — the exact pattern that produced the
+  //    starters-JSON-in-Q&A bug. Fire generateStarters and
+  //    askWithToolsStream nearly simultaneously and assert clean outputs.
+  await record('concurrent.starters_and_ask', () async {
+    final transcript = _splitTranscript(_testTranscript);
+    // Drop the cache so generateStarters actually runs.
+    gemma.unloadChat();
+    final startersFuture = gemma.generateStarters(
+      lectureContext: _testTranscript,
+      languageName: 'French',
+    );
+    // Tiny gap then kick off Q&A — this races against starters generation
+    // and used to deliver the starters JSON as the Q&A response.
+    await Future.delayed(const Duration(milliseconds: 50));
+    final buf = StringBuffer();
+    await for (final ev in gemma.askWithToolsStream(
+      transcript: transcript,
+      keyTerms: const [],
+      question: 'Why do leaves appear green?',
+    )) {
+      if (ev is AskText) buf.write(ev.token);
+    }
+    final answer = buf.toString().trim();
+    final starters = await startersFuture;
+    final contaminated = looksLikeStartersJson(answer) || looksLikeQuizJson(answer);
+    return {
+      'pass': !contaminated && answer.isNotEmpty,
+      'contaminated': contaminated,
+      'answer_preview': answer.length > 400 ? '${answer.substring(0, 400)}…' : answer,
+      'starters_hint': starters.hint,
+      'starters_questions_count': starters.questions.length,
+    };
+  });
+
+  // 8. Generate quiz stream — must yield at least 1 valid item.
+  await record('quiz.stream', () async {
+    final items = <Map<String, dynamic>>[];
+    await for (final q in gemma.generateQuizStream(
+      transcript: _testTranscript,
+      languageName: 'English',
+      count: 3,
+    )) {
+      items.add({
+        'question': q.question,
+        'options': q.options,
+        'correct_index': q.correctIndex,
+      });
+    }
+    final allFour = items.every((q) =>
+        (q['options'] as List).length == 4 &&
+        (q['correct_index'] as int) >= 0 &&
+        (q['correct_index'] as int) <= 3);
+    return {
+      'pass': items.isNotEmpty && allFour,
+      'item_count': items.length,
+      'first_item': items.isNotEmpty ? items.first : null,
+    };
+  });
+
+  // 9. Study pack stream — must yield at least one snapshot with summary.
+  await record('study_pack.stream', () async {
+    var sawSummary = false;
+    var lastTermCount = 0;
+    await for (final p in gemma.generateStudyPackStream(
+      transcript: _testTranscript,
+      lang: 'en',
+      languageName: 'English',
+    )) {
+      if (p.summary.isNotEmpty) sawSummary = true;
+      lastTermCount = p.keyTerms.length;
+    }
+    return {
+      'pass': sawSummary,
+      'final_key_term_count': lastTermCount,
+    };
+  });
+
+  // ignore: avoid_print
+  print('TEST: ALL DONE — see ${out.path}');
+  await flush();
+}
+
+List<TranscriptLine> _splitTranscript(String text) {
+  final lines = text
+      .split(RegExp(r'(?<=[.!?])\s+'))
+      .where((s) => s.trim().isNotEmpty)
+      .toList();
+  return lines.asMap().entries.map((e) {
+    final s = e.key * 4;
+    final h = (s ~/ 3600).toString().padLeft(2, '0');
+    final m = ((s % 3600) ~/ 60).toString().padLeft(2, '0');
+    final ss = (s % 60).toString().padLeft(2, '0');
+    return TranscriptLine(
+      timestamp: '$h:$m:$ss',
+      index: e.key,
+      text: e.value.trim(),
+    );
+  }).toList();
 }

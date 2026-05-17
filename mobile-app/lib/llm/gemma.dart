@@ -35,6 +35,25 @@ class QAStarters {
     required this.welcomeBody,
     required this.questions,
   });
+
+  /// Safe English defaults the UI falls back to instead of running a
+  /// separate inference call. flutter_gemma 0.14.5's createChat() leaks
+  /// state on iOS — running a JSON-output starter prompt anchored the
+  /// model into that format, so subsequent Q&A turns echoed the starter
+  /// JSON back at the user. Static fallback eliminates that contamination
+  /// source entirely.
+  static const QAStarters fallback = QAStarters(
+    hint: 'Ask anything about this lecture…',
+    subtitle: 'Gemma 4 · on this phone',
+    welcomeTitle: 'Ask anything about this lecture',
+    welcomeBody:
+        'Gemma 4 runs on this phone. Nothing leaves your device — works anywhere.',
+    questions: [
+      'Summarize this lecture in three bullet points.',
+      'What are the most important concepts?',
+      'Give me a quick example from the lecture.',
+    ],
+  );
 }
 
 /// A grounded citation produced when Gemma 4 calls one of our tools while
@@ -103,8 +122,6 @@ class GemmaService {
   InferenceModel? _model;
   InferenceChat? _chat;
   int? _primedContextHash;
-  final Map<String, Future<QAStarters>> _startersCache = {};
-
   /// Global serialization gate: every public inference call (prime,
   /// generateStarters, ask, translate, study pack, quiz) chains onto this
   /// future before touching the model. Two concurrent createChat() calls
@@ -526,74 +543,17 @@ class GemmaService {
   /// the starters in the background, and qa_screen later gets an instant
   /// cache hit. Runs in a fresh chat so it does not evict the primed
   /// lecture context.
+  /// Returns safe static starter content. We previously generated this
+  /// dynamically per-lecture-and-language, but the underlying flutter_gemma
+  /// behavior leaked state across chat sessions on iOS: the JSON-output
+  /// starters prompt anchored the model into that format, and subsequent
+  /// Q&A turns echoed the starters JSON back as the "answer". Skipping
+  /// the inference call here is the most reliable mitigation.
   Future<QAStarters> generateStarters({
     required String lectureContext,
     required String languageName,
-  }) {
-    final trimmed = _trimContext(lectureContext);
-    final key = '${trimmed.hashCode}|$languageName';
-    return _startersCache.putIfAbsent(
-      key,
-      () => _serialize(() => _generateStarters(trimmed, languageName))
-          .catchError((e) {
-        _startersCache.remove(key);
-        throw e;
-      }),
-    );
-  }
-
-  Future<QAStarters> _generateStarters(String trimmed, String languageName) async {
-    if (_status != GemmaStatus.ready || _model == null) {
-      throw StateError('Gemma not ready (status=$_status)');
-    }
-    final prompt =
-        'You will be shown a lecture transcript. Generate study aids for a '
-        'student about to review it. Output STRICT JSON in this exact shape, '
-        'no commentary, no code fence:\n'
-        '{\n'
-        '  "hint": "...",\n'
-        '  "subtitle": "...",\n'
-        '  "welcome_title": "...",\n'
-        '  "welcome_body": "...",\n'
-        '  "questions": ["...", "...", "..."]\n'
-        '}\n\n'
-        'Rules — all string values must be written in $languageName:\n'
-        '- "hint": a short input-field placeholder, 4-8 words. Like "Ask '
-        'anything about this lecture…" but in $languageName.\n'
-        '- "subtitle": a short status line, 3-6 words. Means "Gemma 4 · on '
-        'this phone" — convey that the AI is running locally on the user\'s '
-        'device. Keep "Gemma 4" untranslated; translate only the rest.\n'
-        '- "welcome_title": a friendly invitation 4-7 words, meaning '
-        '"Ask anything about this lecture".\n'
-        '- "welcome_body": one short sentence (12-22 words) meaning '
-        '"Gemma 4 runs on this phone. Nothing leaves your device — works '
-        'anywhere." Keep "Gemma 4" untranslated.\n'
-        '- "questions": exactly 3 short specific questions a student would '
-        'ask after this lecture. Each 6-14 words.\n\n'
-        'Transcript:\n"""\n$trimmed\n"""\n\nJSON:';
-    final chat = await _model!.createChat();
-    await chat.addQueryChunk(Message.text(text: prompt, isUser: true));
-    final response = await chat.generateChatResponse();
-    final raw = _extractText(response);
-    final json = _extractJson(raw);
-    final hint = (json['hint'] as String?)?.trim() ?? 'Ask anything about this lecture…';
-    final subtitle = (json['subtitle'] as String?)?.trim() ?? 'Gemma 4 · on this phone';
-    final welcomeTitle = (json['welcome_title'] as String?)?.trim()
-        ?? 'Ask anything about this lecture';
-    final welcomeBody = (json['welcome_body'] as String?)?.trim()
-        ?? 'Gemma 4 runs on this phone. Nothing leaves your device — works anywhere.';
-    final questions = ((json['questions'] as List?) ?? const [])
-        .whereType<String>()
-        .map((s) => s.trim())
-        .where((s) => s.isNotEmpty)
-        .toList(growable: false);
-    return QAStarters(
-      hint: hint,
-      subtitle: subtitle,
-      welcomeTitle: welcomeTitle,
-      welcomeBody: welcomeBody,
-      questions: questions,
-    );
+  }) async {
+    return QAStarters.fallback;
   }
 
   /// On-device translation. Streams the translated text token-by-token.
