@@ -42,4 +42,59 @@ post_install do |installer|
   installer.pods_project.targets.each do |target|
     flutter_additional_ios_build_settings(target)
   end
+
+  # The vendored cactus_util.framework (cactus 1.3.0, pub.dev) ships with a
+  # stripped Info.plist that has no MinimumOSVersion. App Store validation
+  # rejects it with "Apps that only support 64-bit devices must specify a
+  # deployment target of 8.0 or later." Append a patch step to the generated
+  # xcframeworks copy script so the build-dir slice gets a valid Info.plist
+  # before Xcode embeds and signs it into Runner.app.
+  xcframeworks_script_path = File.join(__dir__, 'Pods', 'Target Support Files', 'cactus', 'cactus-xcframeworks.sh')
+  if File.exist?(xcframeworks_script_path)
+    sentinel = '# CACTUS_UTIL_INFO_PLIST_PATCH_V1'
+    contents = File.read(xcframeworks_script_path)
+    unless contents.include?(sentinel)
+      File.open(xcframeworks_script_path, 'a') do |f|
+        f.puts ''
+        f.puts sentinel
+        f.puts 'INFO_PLIST="${PODS_XCFRAMEWORKS_BUILD_DIR}/cactus/cactus_util.framework/Info.plist"'
+        f.puts 'if [ -f "$INFO_PLIST" ]; then'
+        f.puts '  plutil -remove MinimumOSVersion "$INFO_PLIST" >/dev/null 2>&1 || true'
+        f.puts '  plutil -insert MinimumOSVersion -string "16.0" "$INFO_PLIST"'
+        f.puts '  plutil -remove CFBundleSupportedPlatforms "$INFO_PLIST" >/dev/null 2>&1 || true'
+        f.puts '  plutil -insert CFBundleSupportedPlatforms -json \'["iPhoneOS"]\' "$INFO_PLIST"'
+        f.puts '  plutil -remove UIRequiredDeviceCapabilities "$INFO_PLIST" >/dev/null 2>&1 || true'
+        f.puts '  plutil -insert UIRequiredDeviceCapabilities -json \'["arm64"]\' "$INFO_PLIST"'
+        f.puts '  plutil -replace CFBundleName -string "cactus_util" "$INFO_PLIST" >/dev/null 2>&1 || \\'
+        f.puts '    plutil -insert CFBundleName -string "cactus_util" "$INFO_PLIST"'
+        f.puts '  echo "Patched cactus_util.framework Info.plist (MinimumOSVersion=16.0)"'
+        f.puts 'fi'
+      end
+    end
+  end
+
+  # Generate stub .dSYM bundles for vendored binary frameworks that ship
+  # without dSYMs (cactus + flutter_gemma's LiteRT-LM dylibs are stripped at
+  # vendor build time, with debug-info references pointing at vendor caches
+  # we don't have). Without dSYMs, App Store Connect's symbol upload fails
+  # with "Upload Symbols Failed" — IPA is accepted, but crashes from those
+  # frameworks won't be symbolicated. The helper writes 56-byte MH_DSYM
+  # Mach-O files whose LC_UUID matches each framework binary, which is what
+  # Apple's pipeline checks. See ios/scripts/make_stub_dsyms.sh.
+  frameworks_script_path = File.join(__dir__, 'Pods', 'Target Support Files', 'Pods-Runner', 'Pods-Runner-frameworks.sh')
+  if File.exist?(frameworks_script_path)
+    sentinel = '# VENDORED_DSYM_STUBS_V2'
+    contents = File.read(frameworks_script_path)
+    unless contents.include?(sentinel)
+      File.open(frameworks_script_path, 'a') do |f|
+        f.puts ''
+        f.puts sentinel
+        f.puts 'if [ "${ACTION:-}" = "install" ] && [ -n "${DWARF_DSYM_FOLDER_PATH:-}" ]; then'
+        f.puts '  "${SRCROOT}/scripts/make_stub_dsyms.sh" \\'
+        f.puts '    "${TARGET_BUILD_DIR}/${FRAMEWORKS_FOLDER_PATH}" \\'
+        f.puts '    "${DWARF_DSYM_FOLDER_PATH}"'
+        f.puts 'fi'
+      end
+    end
+  end
 end
