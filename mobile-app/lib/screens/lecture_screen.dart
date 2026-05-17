@@ -48,39 +48,9 @@ class _LectureScreenState extends State<LectureScreen> {
   Future<void> _translate(Lecture lecture, {VoidCallback? onStart}) async {
     final targetCode = await showModalBottomSheet<String>(
       context: context,
-      builder: (sheetCtx) {
-        final cs = Theme.of(sheetCtx).colorScheme;
-        return SafeArea(
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Padding(
-                padding: const EdgeInsets.fromLTRB(20, 16, 20, 8),
-                child: Row(
-                  children: [
-                    Icon(Icons.translate_rounded, color: cs.primary, size: 22),
-                    const SizedBox(width: 10),
-                    const Text('Translate this lecture',
-                        style: TextStyle(fontSize: 17, fontWeight: FontWeight.w600)),
-                  ],
-                ),
-              ),
-              ...langNames.entries
-                  .where((e) => e.key != 'en')
-                  .map((e) => ListTile(
-                        title: Text(e.value),
-                        trailing: Text(e.key.toUpperCase(),
-                            style: TextStyle(
-                              fontSize: 12,
-                              color: Colors.white.withValues(alpha: 0.4),
-                            )),
-                        onTap: () => Navigator.of(sheetCtx).pop(e.key),
-                      )),
-              const SizedBox(height: 8),
-            ],
-          ),
-        );
-      },
+      isScrollControlled: true,
+      backgroundColor: Colors.transparent,
+      builder: (sheetCtx) => _LanguagePickerSheet(),
     );
     if (targetCode == null || !mounted) return;
     final targetName = langNames[targetCode] ?? targetCode;
@@ -731,6 +701,147 @@ class _TranslationTab extends StatelessWidget {
     return _TranscriptTab(
       lines: lecture.translation,
       isRtl: rtlLangs.contains(lecture.manifest.lang),
+    );
+  }
+}
+
+/// Bottom sheet for picking a translation target. Draggable, scrollable, and
+/// designed to feel iOS-native without growing past 85% of the screen.
+class _LanguagePickerSheet extends StatelessWidget {
+  @override
+  Widget build(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
+    final entries =
+        langNames.entries.where((e) => e.key != 'en').toList(growable: false);
+    return DraggableScrollableSheet(
+      initialChildSize: 0.6,
+      minChildSize: 0.4,
+      maxChildSize: 0.92,
+      expand: false,
+      builder: (ctx, scrollController) {
+        return Container(
+          decoration: const BoxDecoration(
+            color: Color(0xFF15151A),
+            borderRadius: BorderRadius.vertical(top: Radius.circular(22)),
+          ),
+          child: Column(
+            children: [
+              const SizedBox(height: 10),
+              Container(
+                width: 38, height: 4,
+                decoration: BoxDecoration(
+                  color: Colors.white.withValues(alpha: 0.18),
+                  borderRadius: BorderRadius.circular(2),
+                ),
+              ),
+              Padding(
+                padding: const EdgeInsets.fromLTRB(20, 16, 20, 4),
+                child: Row(
+                  children: [
+                    Container(
+                      width: 36, height: 36,
+                      decoration: BoxDecoration(
+                        color: cs.primary.withValues(alpha: 0.18),
+                        borderRadius: BorderRadius.circular(10),
+                      ),
+                      child: Icon(Icons.translate_rounded,
+                          color: cs.primary, size: 20),
+                    ),
+                    const SizedBox(width: 12),
+                    const Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text('Translate this lecture',
+                              style: TextStyle(
+                                  fontSize: 17, fontWeight: FontWeight.w600,
+                                  letterSpacing: -0.2)),
+                          SizedBox(height: 2),
+                          Text('Runs on this phone with Gemma 4',
+                              style: TextStyle(
+                                fontSize: 12, color: Colors.white54,
+                              )),
+                        ],
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              const SizedBox(height: 8),
+              Expanded(
+                child: ListView.separated(
+                  controller: scrollController,
+                  padding: const EdgeInsets.fromLTRB(12, 4, 12, 20),
+                  itemCount: entries.length,
+                  separatorBuilder: (_, __) => const SizedBox(height: 2),
+                  itemBuilder: (_, i) {
+                    final e = entries[i];
+                    final isRtl = rtlLangs.contains(e.key);
+                    return InkWell(
+                      borderRadius: BorderRadius.circular(12),
+                      onTap: () => Navigator.of(ctx).pop(e.key),
+                      child: Padding(
+                        padding: const EdgeInsets.symmetric(
+                            horizontal: 12, vertical: 12),
+                        child: Row(
+                          children: [
+                            Container(
+                              width: 36, height: 36,
+                              alignment: Alignment.center,
+                              decoration: BoxDecoration(
+                                color: Colors.white.withValues(alpha: 0.06),
+                                borderRadius: BorderRadius.circular(10),
+                              ),
+                              child: Text(
+                                e.key.toUpperCase(),
+                                style: TextStyle(
+                                  fontSize: 11, fontWeight: FontWeight.w600,
+                                  letterSpacing: 0.4,
+                                  color: Colors.white.withValues(alpha: 0.75),
+                                ),
+                              ),
+                            ),
+                            const SizedBox(width: 14),
+                            Expanded(
+                              child: Text(
+                                e.value,
+                                style: const TextStyle(
+                                  fontSize: 15, fontWeight: FontWeight.w500,
+                                ),
+                              ),
+                            ),
+                            if (isRtl)
+                              Container(
+                                padding: const EdgeInsets.symmetric(
+                                    horizontal: 7, vertical: 2),
+                                decoration: BoxDecoration(
+                                  color: Colors.white.withValues(alpha: 0.06),
+                                  borderRadius: BorderRadius.circular(5),
+                                ),
+                                child: Text(
+                                  'RTL',
+                                  style: TextStyle(
+                                    fontSize: 10, fontWeight: FontWeight.w600,
+                                    letterSpacing: 0.5,
+                                    color: Colors.white.withValues(alpha: 0.5),
+                                  ),
+                                ),
+                              ),
+                            const SizedBox(width: 4),
+                            Icon(Icons.chevron_right_rounded,
+                                size: 18,
+                                color: Colors.white.withValues(alpha: 0.3)),
+                          ],
+                        ),
+                      ),
+                    );
+                  },
+                ),
+              ),
+            ],
+          ),
+        );
+      },
     );
   }
 }
