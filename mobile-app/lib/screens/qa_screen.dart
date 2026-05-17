@@ -244,7 +244,7 @@ class _QAScreenState extends State<QAScreen> with SingleTickerProviderStateMixin
         children: [
           Expanded(
             child: _messages.isEmpty
-                ? const _Welcome()
+                ? _Welcome(starters: _starters)
                 : ListView.builder(
                     controller: _scroll,
                     padding: const EdgeInsets.fromLTRB(16, 16, 16, 8),
@@ -285,11 +285,15 @@ class _QAScreenState extends State<QAScreen> with SingleTickerProviderStateMixin
 }
 
 class _Welcome extends StatelessWidget {
-  const _Welcome();
+  final QAStarters? starters;
+  const _Welcome({this.starters});
 
   @override
   Widget build(BuildContext context) {
     final cs = Theme.of(context).colorScheme;
+    final title = starters?.welcomeTitle ?? 'Ask anything about this lecture';
+    final body = starters?.welcomeBody
+        ?? 'Gemma 4 runs on this phone. Nothing leaves your device — works anywhere.';
     return ListView(
       padding: const EdgeInsets.fromLTRB(20, 28, 20, 24),
       children: [
@@ -308,11 +312,10 @@ class _Welcome extends StatelessWidget {
           child: Icon(Icons.auto_awesome_rounded, color: cs.primary, size: 28),
         ),
         const SizedBox(height: 18),
-        Text('Ask anything about this lecture',
-            style: Theme.of(context).textTheme.titleLarge),
+        Text(title, style: Theme.of(context).textTheme.titleLarge),
         const SizedBox(height: 6),
         Text(
-          'Gemma 4 runs on this phone. Nothing leaves your device — works anywhere.',
+          body,
           style: Theme.of(context).textTheme.bodyMedium?.copyWith(
                 color: Colors.white.withValues(alpha: 0.6),
               ),

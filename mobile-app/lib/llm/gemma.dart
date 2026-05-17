@@ -10,10 +10,14 @@ enum GemmaStatus { notReady, downloading, ready, error }
 class QAStarters {
   final String hint;
   final String subtitle;
+  final String welcomeTitle;
+  final String welcomeBody;
   final List<String> questions;
   const QAStarters({
     required this.hint,
     required this.subtitle,
+    required this.welcomeTitle,
+    required this.welcomeBody,
     required this.questions,
   });
 }
@@ -454,6 +458,8 @@ class GemmaService {
         '{\n'
         '  "hint": "...",\n'
         '  "subtitle": "...",\n'
+        '  "welcome_title": "...",\n'
+        '  "welcome_body": "...",\n'
         '  "questions": ["...", "...", "..."]\n'
         '}\n\n'
         'Rules — all string values must be written in $languageName:\n'
@@ -462,6 +468,11 @@ class GemmaService {
         '- "subtitle": a short status line, 3-6 words. Means "Gemma 4 · on '
         'this phone" — convey that the AI is running locally on the user\'s '
         'device. Keep "Gemma 4" untranslated; translate only the rest.\n'
+        '- "welcome_title": a friendly invitation 4-7 words, meaning '
+        '"Ask anything about this lecture".\n'
+        '- "welcome_body": one short sentence (12-22 words) meaning '
+        '"Gemma 4 runs on this phone. Nothing leaves your device — works '
+        'anywhere." Keep "Gemma 4" untranslated.\n'
         '- "questions": exactly 3 short specific questions a student would '
         'ask after this lecture. Each 6-14 words.\n\n'
         'Transcript:\n"""\n$trimmed\n"""\n\nJSON:';
@@ -472,12 +483,22 @@ class GemmaService {
     final json = _extractJson(raw);
     final hint = (json['hint'] as String?)?.trim() ?? 'Ask anything about this lecture…';
     final subtitle = (json['subtitle'] as String?)?.trim() ?? 'Gemma 4 · on this phone';
+    final welcomeTitle = (json['welcome_title'] as String?)?.trim()
+        ?? 'Ask anything about this lecture';
+    final welcomeBody = (json['welcome_body'] as String?)?.trim()
+        ?? 'Gemma 4 runs on this phone. Nothing leaves your device — works anywhere.';
     final questions = ((json['questions'] as List?) ?? const [])
         .whereType<String>()
         .map((s) => s.trim())
         .where((s) => s.isNotEmpty)
         .toList(growable: false);
-    return QAStarters(hint: hint, subtitle: subtitle, questions: questions);
+    return QAStarters(
+      hint: hint,
+      subtitle: subtitle,
+      welcomeTitle: welcomeTitle,
+      welcomeBody: welcomeBody,
+      questions: questions,
+    );
   }
 
   /// On-device translation. Streams the translated text token-by-token.
