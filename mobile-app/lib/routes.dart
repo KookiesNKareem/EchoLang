@@ -8,6 +8,7 @@ import 'screens/lecture_screen.dart';
 import 'screens/lectures_screen.dart';
 import 'screens/qa_screen.dart';
 import 'screens/record_screen.dart';
+import 'screens/settings_screen.dart';
 
 GoRouter buildRouter({
   required BundleStore store,
@@ -41,6 +42,7 @@ GoRouter buildRouter({
         path: '/lecture/:dirPath',
         builder: (_, state) => LectureScreen(
           store: store,
+          gemma: gemma,
           dirPath: Uri.decodeComponent(state.pathParameters['dirPath']!),
         ),
       ),
@@ -50,6 +52,14 @@ GoRouter buildRouter({
           store: store,
           gemma: gemma,
           dirPath: Uri.decodeComponent(state.pathParameters['dirPath']!),
+        ),
+      ),
+      GoRoute(
+        path: '/settings',
+        builder: (_, __) => SettingsScreen(
+          store: store,
+          gemma: gemma,
+          whisper: whisper,
         ),
       ),
     ],
