@@ -49,6 +49,11 @@ class _RecordScreenState extends State<RecordScreen> with SingleTickerProviderSt
       vsync: this,
       duration: const Duration(milliseconds: 1200),
     )..repeat(reverse: true);
+    // Free Gemma's ~2.6 GB weights while the user is recording. The mic +
+    // STT + audio buffers + Gemma together crossed the iOS jetsam threshold
+    // on testers' phones and crashed the app mid-recording. We reload Gemma
+    // after the user stops recording, before the study-pack step.
+    widget.gemma.unload();
   }
 
   @override
@@ -208,6 +213,7 @@ class _RecordScreenState extends State<RecordScreen> with SingleTickerProviderSt
                       backendLabel: widget.whisper.hasNativeBackend
                           ? 'iOS Speech · on-device'
                           : 'Whisper · fallback',
+                      errorMessage: widget.whisper.lastErrorMessage,
                     ),
                   _Phase.transcribing || _Phase.summarizing =>
                     Center(child: _ProcessingIndicator(message: _statusMsg ?? 'Working…')),
@@ -272,11 +278,13 @@ class _RecordingView extends StatelessWidget {
   final String Function(Duration) fmt;
   final String? livePartial;
   final String backendLabel;
+  final String? errorMessage;
   const _RecordingView({
     required this.elapsed,
     required this.fmt,
     required this.backendLabel,
     this.livePartial,
+    this.errorMessage,
   });
 
   int get _wordCount {
@@ -353,6 +361,33 @@ class _RecordingView extends StatelessWidget {
             ),
           ],
         ),
+        if (errorMessage != null && errorMessage!.isNotEmpty) ...[
+          const SizedBox(height: 10),
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+            decoration: BoxDecoration(
+              color: const Color(0xFFE57373).withValues(alpha: 0.12),
+              borderRadius: BorderRadius.circular(8),
+              border: Border.all(color: const Color(0xFFE57373).withValues(alpha: 0.32)),
+            ),
+            child: Row(
+              children: [
+                const Icon(Icons.warning_amber_rounded,
+                    size: 14, color: Color(0xFFE57373)),
+                const SizedBox(width: 6),
+                Expanded(
+                  child: Text(
+                    'STT: $errorMessage',
+                    maxLines: 2, overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(
+                      fontSize: 11.5, color: Color(0xFFE57373),
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ],
         const SizedBox(height: 16),
         // Live transcript fills the rest of the screen so the user can SEE
         // every word land. Empty state explains why nothing is showing yet.

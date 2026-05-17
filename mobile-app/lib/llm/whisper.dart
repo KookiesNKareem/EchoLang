@@ -112,12 +112,9 @@ class WhisperService {
       _accumulated = '';
       _liveLocale = localeId;
       _liveOnPartial = onPartial;
-      // iOS Speech.framework auto-stops on ~3 s of silence and after ~30 s
-      // wall-clock regardless of what the user is doing. Pass aggressive
-      // durations AND wire a status listener that re-arms the session as
-      // soon as iOS stops it, so a full lecture's audio actually lands in
-      // the transcript instead of getting clipped on every pause.
+      _lastErrorMessage = null;
       _native.statusListener = _onNativeStatusChanged;
+      _native.errorListener = _onNativeError;
       await _startNativeSession();
       return;
     }
@@ -134,6 +131,21 @@ class WhisperService {
   String _liveLocale = 'en_US';
   void Function(String)? _liveOnPartial;
   Timer? _cycleTimer;
+  String? _lastErrorMessage;
+  int _restartAttempts = 0;
+  // Guard against concurrent _cycleNativeSession invocations. iOS can fire
+  // a status='notListening' callback AT THE SAME TIME the proactive cycle
+  // timer fires — without this gate, both fire stop()+listen() and we end
+  // up with two parallel recognizers, each delivering the same partial as
+  // a new final. The visible symptom was the word counter doubling in one
+  // tick (e.g. 80 → 158).
+  bool _cycling = false;
+  static const _maxConsecutiveRestartFailures = 5;
+
+  /// Latest non-permanent STT error message, surfaced in the recording UI so
+  /// users can see when the recognizer hits a transient issue (and our
+  /// retry logic is responding).
+  String? get lastErrorMessage => _lastErrorMessage;
 
   Future<void> _startNativeSession() async {
     _currentPartial = '';
@@ -164,19 +176,10 @@ class WhisperService {
     // clock regardless of what we set, so we manually rotate sessions at
     // 25 s to ensure we own the transition. _commitPartial preserves words
     // across the boundary; the new session resumes recognition immediately.
+    // Successful start resets the retry counter.
+    _restartAttempts = 0;
     _cycleTimer?.cancel();
-    _cycleTimer = Timer(const Duration(seconds: 25), () async {
-      if (!_wantListening) return;
-      _commitPartial();
-      try {
-        if (_native.isListening) await _native.stop();
-      } catch (_) {}
-      if (_wantListening) {
-        try {
-          await _startNativeSession();
-        } catch (_) {}
-      }
-    });
+    _cycleTimer = Timer(const Duration(seconds: 25), () => _cycleNativeSession());
   }
 
   void _commitPartial() {
@@ -197,20 +200,70 @@ class WhisperService {
     return '$_accumulated $p';
   }
 
+  /// Stop + restart cycle. Errors are caught and retried up to a small
+  /// cap so a single bad transition can't permanently kill the recognizer.
+  /// Re-entrant calls are dropped — see [_cycling].
+  Future<void> _cycleNativeSession() async {
+    if (_cycling || !_wantListening) return;
+    _cycling = true;
+    try {
+      _commitPartial();
+      try {
+        if (_native.isListening) await _native.stop();
+      } catch (_) {}
+      // Brief beat for iOS to fully release the audio session before we
+      // ask for it back. Without this, listen() sometimes throws on rapid
+      // cycle.
+      await Future.delayed(const Duration(milliseconds: 250));
+      if (!_wantListening) return;
+      try {
+        await _startNativeSession();
+      } catch (e) {
+        _restartAttempts += 1;
+        _lastErrorMessage = 'Restart attempt $_restartAttempts: $e';
+        _liveOnPartial?.call(_previewText());
+        if (_restartAttempts < _maxConsecutiveRestartFailures) {
+          await Future.delayed(Duration(milliseconds: 400 * _restartAttempts));
+          if (_wantListening) {
+            // Re-enter via a fresh call so the gate lets us through.
+            _cycling = false;
+            unawaited(_cycleNativeSession());
+            return;
+          }
+        }
+      }
+    } finally {
+      _cycling = false;
+    }
+  }
+
+  /// Speech.framework reports errors via this callback. Most of them are
+  /// transient (audio session interruption, brief network blip, etc.) and
+  /// the right response is to recycle the session.
+  void _onNativeError(dynamic err) {
+    _lastErrorMessage = err.errorMsg;
+    if (!_wantListening) return;
+    // Don't double-cycle if the status listener is already going to fire.
+    if (err.permanent) {
+      // Permanent errors usually mean no recognition will work in this
+      // session — let it die rather than spinning forever.
+      _wantListening = false;
+      _cycleTimer?.cancel();
+      return;
+    }
+    // Best-effort: kick off a recycle. cycle is idempotent against
+    // statusListener-driven recycles via _restartAttempts cap.
+    unawaited(_cycleNativeSession());
+  }
+
   void _onNativeStatusChanged(String status) {
     if (!_wantListening) return;
     if (status == 'notListening' || status == 'done') {
-      // Commit whatever the recognizer had before iOS yanked the session,
-      // then restart. The proactive cycle timer is the primary mechanism;
-      // this is the safety net for when iOS stops us early (silence, audio
-      // session interruption, etc.).
-      _commitPartial();
+      // Safety net for when iOS stops us before our proactive cycle fires
+      // (silence cut, audio session interruption, etc.). _cycleNativeSession
+      // handles commit, stop, restart, and retry-with-backoff in one place.
       _cycleTimer?.cancel();
-      Future.delayed(const Duration(milliseconds: 120), () {
-        if (_wantListening && _backend == SpeechBackend.native) {
-          _startNativeSession().catchError((_) {});
-        }
-      });
+      unawaited(_cycleNativeSession());
     }
   }
 
