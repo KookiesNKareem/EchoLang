@@ -550,23 +550,60 @@ class GemmaService {
     if (_status != GemmaStatus.ready || _model == null) {
       throw StateError('Gemma not ready (status=$_status)');
     }
-    final prompt =
-        'Translate the following English text into $targetLanguageName. '
-        'Preserve sentence boundaries and paragraph breaks. Output ONLY the '
-        'translated text — no preface, no commentary, no "Sure, here is...".'
-        '\n\nEnglish:\n$text\n\n$targetLanguageName:';
-    final chat = await _model!.createChat();
-    await chat.addQueryChunk(Message.text(text: prompt, isUser: true));
-    await for (final chunk in chat.generateChatResponseAsync()) {
-      switch (chunk) {
-        case TextResponse(:final token):
-          yield token;
-        case ThinkingResponse(:final content):
-          yield content;
-        default:
-          break;
+    final chunks = _chunkForTranslation(text);
+    for (var i = 0; i < chunks.length; i++) {
+      final chunk = chunks[i];
+      final prompt =
+          'Translate the following English text into $targetLanguageName. '
+          'Preserve sentence boundaries and paragraph breaks. Output ONLY the '
+          'translated text — no preface, no commentary, no "Sure, here is...".'
+          '\n\nEnglish:\n$chunk\n\n$targetLanguageName:';
+      final chat = await _model!.createChat();
+      await chat.addQueryChunk(Message.text(text: prompt, isUser: true));
+      await for (final piece in chat.generateChatResponseAsync()) {
+        switch (piece) {
+          case TextResponse(:final token):
+            yield token;
+          case ThinkingResponse(:final content):
+            yield content;
+          default:
+            break;
+        }
       }
+      if (i < chunks.length - 1) yield '\n\n';
     }
+  }
+
+  /// Split a transcript into chunks that fit comfortably under the 4096-token
+  /// context window once prompt + output are accounted for. ~1800 chars input
+  /// leaves room for a similarly-sized translation in the same window.
+  static List<String> _chunkForTranslation(String text, {int maxChars = 1800}) {
+    if (text.length <= maxChars) return [text];
+    final out = <String>[];
+    final paragraphs = text.split(RegExp(r'\n\s*\n'));
+    final buf = StringBuffer();
+    void flush() {
+      final s = buf.toString().trim();
+      if (s.isNotEmpty) out.add(s);
+      buf.clear();
+    }
+    for (final p in paragraphs) {
+      if (p.length > maxChars) {
+        flush();
+        for (final sentence in p.split(RegExp(r'(?<=[.!?])\s+'))) {
+          if (buf.length + sentence.length + 1 > maxChars) flush();
+          if (buf.isNotEmpty) buf.write(' ');
+          buf.write(sentence);
+        }
+        flush();
+        continue;
+      }
+      if (buf.length + p.length + 2 > maxChars) flush();
+      if (buf.isNotEmpty) buf.write('\n\n');
+      buf.write(p);
+    }
+    flush();
+    return out;
   }
 
   Future<StudyPack> generateStudyPack({
