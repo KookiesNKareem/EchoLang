@@ -1,14 +1,17 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:go_router/go_router.dart';
+import 'package:http/http.dart' as http;
 import 'package:path_provider/path_provider.dart';
 import 'package:uuid/uuid.dart';
 
 import '../data/bundle_store.dart';
 import '../data/models.dart';
+import '../data/preferences.dart';
 import '../llm/gemma.dart';
 import '../llm/whisper.dart';
 import 'model_info_sheet.dart';
@@ -39,11 +42,18 @@ class _LecturesScreenState extends State<LecturesScreen> {
   bool _fabOpen = false;
   Map<String, dynamic>? _recoverable;
 
+  ({String url, String lang})? _watchedPi;
+  String? _watchedPiStatus;
+  bool _watchedPiBusy = false;
+  Timer? _watchPollTimer;
+  final Set<String> _downloadingClassIds = <String>{};
+
   @override
   void initState() {
     super.initState();
     _future = widget.store.list();
     _checkForRecoverableRecording();
+    _loadWatchedPi();
     widget.gemma
         .ensureReady(onProgress: (p, status) {
           if (!mounted) return;
@@ -70,6 +80,107 @@ class _LecturesScreenState extends State<LecturesScreen> {
     setState(() {
       _future = widget.store.list();
     });
+  }
+
+  @override
+  void dispose() {
+    _watchPollTimer?.cancel();
+    super.dispose();
+  }
+
+  Future<void> _loadWatchedPi() async {
+    final pi = await Preferences.getWatchedPi();
+    if (!mounted) return;
+    setState(() => _watchedPi = pi);
+    if (pi != null) {
+      _watchPollTimer?.cancel();
+      _watchPollTimer = Timer.periodic(const Duration(seconds: 25), (_) {
+        if (mounted) _pollWatchedPi();
+      });
+      // Probe right away so the banner reflects current state.
+      _pollWatchedPi();
+    }
+  }
+
+  Future<void> _stopWatching() async {
+    _watchPollTimer?.cancel();
+    _watchPollTimer = null;
+    await Preferences.clearWatchedPi();
+    if (!mounted) return;
+    setState(() {
+      _watchedPi = null;
+      _watchedPiStatus = null;
+    });
+  }
+
+  Future<void> _pollWatchedPi() async {
+    final pi = _watchedPi;
+    if (pi == null || _watchedPiBusy) return;
+    setState(() {
+      _watchedPiBusy = true;
+      _watchedPiStatus = 'Checking Pi…';
+    });
+    try {
+      final url = pi.url.replaceAll(RegExp(r'/$'), '');
+      final resp = await http
+          .get(Uri.parse('$url/api/class/active'))
+          .timeout(const Duration(seconds: 3));
+      if (!mounted) return;
+      if (resp.statusCode == 204 || resp.body.isEmpty) {
+        setState(() => _watchedPiStatus = 'No class in session yet');
+        return;
+      }
+      if (resp.statusCode != 200) {
+        setState(() => _watchedPiStatus = 'Pi responded ${resp.statusCode}');
+        return;
+      }
+      final j = jsonDecode(resp.body) as Map<String, dynamic>;
+      final classId = j['id'] as String?;
+      final title = j['title'] as String?;
+      if (classId == null) {
+        setState(() => _watchedPiStatus = 'No class id from Pi');
+        return;
+      }
+      final lectures = await widget.store.list();
+      final already = lectures.any(
+        (l) => l.manifest.classId == classId && l.manifest.lang == pi.lang,
+      );
+      if (already) {
+        setState(() => _watchedPiStatus = 'Up to date · ${title ?? classId}');
+        return;
+      }
+      if (_downloadingClassIds.contains(classId)) {
+        setState(() => _watchedPiStatus = 'Downloading ${title ?? classId}…');
+        return;
+      }
+      setState(() {
+        _downloadingClassIds.add(classId);
+        _watchedPiStatus = 'Downloading ${title ?? classId}…';
+      });
+      try {
+        await widget.store.download(
+          piBaseUrl: pi.url,
+          classId: classId,
+          lang: pi.lang,
+        );
+        if (!mounted) return;
+        setState(() => _watchedPiStatus = 'Saved: ${title ?? classId}');
+        _refresh();
+      } catch (e) {
+        if (!mounted) return;
+        setState(() => _watchedPiStatus = 'Download failed: $e');
+      } finally {
+        if (mounted) {
+          setState(() => _downloadingClassIds.remove(classId));
+        }
+      }
+    } on TimeoutException {
+      if (mounted) setState(() => _watchedPiStatus = 'Pi unreachable');
+    } catch (e) {
+      if (mounted) setState(() => _watchedPiStatus = 'Error: $e');
+    } finally {
+      if (mounted) setState(() => _watchedPiBusy = false);
+    }
   }
 
   /// Look for an in-progress recording file the record screen flushes to
@@ -352,6 +463,16 @@ class _LecturesScreenState extends State<LecturesScreen> {
                             onDiscard: _discardRecoverable,
                           ),
                         ],
+                        if (_watchedPi != null) ...[
+                          const SizedBox(height: 16),
+                          _WatchBanner(
+                            pi: _watchedPi!,
+                            status: _watchedPiStatus,
+                            busy: _watchedPiBusy,
+                            onRefresh: _pollWatchedPi,
+                            onStop: _stopWatching,
+                          ),
+                        ],
                       ],
                     ),
                   ),
@@ -369,6 +490,8 @@ class _LecturesScreenState extends State<LecturesScreen> {
                       separatorBuilder: (_, _) => const SizedBox(height: 12),
                       itemBuilder: (_, i) => _LectureCard(
                         ref: lectures[i],
+                        syncing: _downloadingClassIds
+                            .contains(lectures[i].manifest.classId),
                         onTap: () async {
                           await context.push('/lecture/${Uri.encodeComponent(lectures[i].dir.path)}');
                           _refresh();
@@ -637,7 +760,13 @@ class _LectureCard extends StatelessWidget {
   final LectureRef ref;
   final VoidCallback onTap;
   final VoidCallback? onMore;
-  const _LectureCard({required this.ref, required this.onTap, this.onMore});
+  final bool syncing;
+  const _LectureCard({
+    required this.ref,
+    required this.onTap,
+    this.onMore,
+    this.syncing = false,
+  });
 
   @override
   Widget build(BuildContext context) {
@@ -658,10 +787,18 @@ class _LectureCard extends StatelessWidget {
                   borderRadius: BorderRadius.circular(12),
                   color: cs.primary.withValues(alpha: 0.12),
                 ),
-                child: Icon(
-                  Icons.school_rounded,
-                  color: cs.primary, size: 24,
-                ),
+                child: syncing
+                    ? Padding(
+                        padding: const EdgeInsets.all(14),
+                        child: CircularProgressIndicator(
+                          strokeWidth: 2,
+                          valueColor: AlwaysStoppedAnimation(cs.primary),
+                        ),
+                      )
+                    : Icon(
+                        Icons.school_rounded,
+                        color: cs.primary, size: 24,
+                      ),
               ),
               const SizedBox(width: 14),
               Expanded(
@@ -1022,6 +1159,88 @@ class _RecoveryBanner extends StatelessWidget {
                 FilledButton(
                   onPressed: onRestore,
                   child: const Text('Restore'),
+                ),
+              ],
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _WatchBanner extends StatelessWidget {
+  final ({String url, String lang}) pi;
+  final String? status;
+  final bool busy;
+  final VoidCallback onRefresh;
+  final VoidCallback onStop;
+  const _WatchBanner({
+    required this.pi,
+    required this.status,
+    required this.busy,
+    required this.onRefresh,
+    required this.onStop,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
+    final host = Uri.tryParse(pi.url)?.host ?? pi.url;
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(14),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                Container(
+                  width: 32, height: 32,
+                  decoration: BoxDecoration(
+                    color: cs.primary.withValues(alpha: 0.18),
+                    borderRadius: BorderRadius.circular(8),
+                  ),
+                  child: busy
+                      ? Padding(
+                          padding: const EdgeInsets.all(8),
+                          child: CircularProgressIndicator(
+                            strokeWidth: 2,
+                            valueColor: AlwaysStoppedAnimation(cs.primary),
+                          ),
+                        )
+                      : Icon(Icons.podcasts_rounded, color: cs.primary, size: 18),
+                ),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        'Watching $host',
+                        style: Theme.of(context).textTheme.titleSmall,
+                      ),
+                      const SizedBox(height: 2),
+                      Text(
+                        status ?? 'Will auto-download new lectures in ${pi.lang.toUpperCase()}',
+                        maxLines: 2, overflow: TextOverflow.ellipsis,
+                        style: TextStyle(
+                          fontSize: 12,
+                          color: Colors.white.withValues(alpha: 0.6),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+                IconButton(
+                  tooltip: 'Refresh now',
+                  onPressed: busy ? null : onRefresh,
+                  icon: const Icon(Icons.refresh_rounded, size: 20),
+                ),
+                IconButton(
+                  tooltip: 'Stop watching',
+                  onPressed: onStop,
+                  icon: const Icon(Icons.close_rounded, size: 20),
                 ),
               ],
             ),

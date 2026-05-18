@@ -6,6 +6,7 @@ import 'package:flutter/services.dart';
 
 import '../data/bundle_store.dart';
 import '../data/models.dart';
+import '../data/preferences.dart';
 import '../llm/gemma.dart';
 
 class QAScreen extends StatefulWidget {
@@ -39,6 +40,7 @@ class _QAScreenState extends State<QAScreen> with SingleTickerProviderStateMixin
   late final AnimationController _typingDots;
   bool _generating = false;
   bool _cancelGeneration = false;
+  bool _answerInEnglish = false;
   String? _modelStatus;
   /// Static starter content (avoids iOS state-leak issue).
   final QAStarters _starters = QAStarters.fallback;
@@ -103,6 +105,18 @@ class _QAScreenState extends State<QAScreen> with SingleTickerProviderStateMixin
   /// Kept for compatibility with _maybePrewarm.
   void _maybeLoadStarters() {}
 
+  String _lectureLangCode() => _lecture?.manifest.lang ?? 'en';
+
+  String _lectureLanguageName() =>
+      langNames[_lectureLangCode()] ?? 'English';
+
+  bool _canToggleLanguage() => _lectureLangCode() != 'en';
+
+  String _answerLanguageName() =>
+      (_answerInEnglish || !_canToggleLanguage())
+          ? 'English'
+          : _lectureLanguageName();
+
   Future<void> _send([String? prefilled]) async {
     final q = (prefilled ?? _input.text).trim();
     if (q.isEmpty || _generating || _lecture == null) return;
@@ -127,6 +141,7 @@ class _QAScreenState extends State<QAScreen> with SingleTickerProviderStateMixin
         transcript: _lecture!.transcript,
         keyTerms: _lecture!.studyPack?.keyTerms ?? const [],
         question: q,
+        answerLanguageName: _answerLanguageName(),
       );
       await for (final ev in stream) {
         if (!mounted) return;
@@ -213,6 +228,23 @@ class _QAScreenState extends State<QAScreen> with SingleTickerProviderStateMixin
             ),
           ],
         ),
+        actions: [
+          if (_canToggleLanguage())
+            Padding(
+              padding: const EdgeInsets.only(right: 8),
+              child: Center(
+                child: _LanguageToggle(
+                  lectureLangCode: _lectureLangCode(),
+                  lectureLangName: _lectureLanguageName(),
+                  inEnglish: _answerInEnglish,
+                  onChanged: (v) {
+                    HapticFeedback.selectionClick();
+                    setState(() => _answerInEnglish = v);
+                  },
+                ),
+              ),
+            ),
+        ],
       ),
       body: Column(
         children: [
@@ -838,6 +870,90 @@ class _Composer extends StatelessWidget {
                   },
                 ),
             ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// Compact two-segment pill in the app bar that flips Gemma's answer language
+/// between the lecture's translated language and English. Only shown when the
+/// lecture is not already in English.
+class _LanguageToggle extends StatelessWidget {
+  final String lectureLangCode;
+  final String lectureLangName;
+  final bool inEnglish;
+  final ValueChanged<bool> onChanged;
+  const _LanguageToggle({
+    required this.lectureLangCode,
+    required this.lectureLangName,
+    required this.inEnglish,
+    required this.onChanged,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
+    return Tooltip(
+      message: inEnglish
+          ? 'Answers in English — tap to switch to $lectureLangName'
+          : 'Answers in $lectureLangName — tap to switch to English',
+      child: Container(
+        decoration: BoxDecoration(
+          color: Colors.white.withValues(alpha: 0.06),
+          borderRadius: BorderRadius.circular(999),
+          border: Border.all(color: Colors.white.withValues(alpha: 0.10)),
+        ),
+        padding: const EdgeInsets.all(2),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            _segment(
+              context,
+              label: lectureLangCode.toUpperCase(),
+              selected: !inEnglish,
+              cs: cs,
+              onTap: () => onChanged(false),
+            ),
+            _segment(
+              context,
+              label: 'EN',
+              selected: inEnglish,
+              cs: cs,
+              onTap: () => onChanged(true),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _segment(
+    BuildContext context, {
+    required String label,
+    required bool selected,
+    required ColorScheme cs,
+    required VoidCallback onTap,
+  }) {
+    return GestureDetector(
+      onTap: onTap,
+      child: AnimatedContainer(
+        duration: const Duration(milliseconds: 160),
+        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+        decoration: BoxDecoration(
+          color: selected ? cs.primary.withValues(alpha: 0.85) : Colors.transparent,
+          borderRadius: BorderRadius.circular(999),
+        ),
+        child: Text(
+          label,
+          style: TextStyle(
+            fontSize: 11,
+            fontWeight: FontWeight.w700,
+            letterSpacing: 0.4,
+            color: selected
+                ? cs.onPrimary
+                : Colors.white.withValues(alpha: 0.7),
           ),
         ),
       ),

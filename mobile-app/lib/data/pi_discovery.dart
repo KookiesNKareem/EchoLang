@@ -157,7 +157,7 @@ class PiDiscovery {
     try {
       final resp = await http
           .get(Uri.parse('http://$ip:$piPort/'))
-          .timeout(const Duration(milliseconds: 600));
+          .timeout(const Duration(milliseconds: 300));
       if (resp.statusCode != 200) return null;
       final body = jsonDecode(resp.body) as Map<String, dynamic>;
       if (body['service'] != 'EchoLang Pi') return null;
@@ -165,7 +165,7 @@ class PiDiscovery {
       try {
         final c = await http
             .get(Uri.parse('http://$ip:$piPort/api/class/active'))
-            .timeout(const Duration(seconds: 1));
+            .timeout(const Duration(milliseconds: 400));
         if (c.statusCode == 200 && c.body.isNotEmpty) {
           final j = jsonDecode(c.body) as Map<String, dynamic>;
           classId = j['id'] as String?;

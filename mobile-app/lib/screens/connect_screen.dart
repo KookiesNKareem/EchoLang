@@ -3,6 +3,7 @@ import 'package:go_router/go_router.dart';
 
 import '../data/bundle_store.dart';
 import '../data/pi_discovery.dart';
+import '../data/preferences.dart';
 
 const _langs = ['en', 'ar', 'uk', 'es', 'zh', 'fr', 'ps', 'fa'];
 
@@ -63,7 +64,22 @@ class _ConnectScreenState extends State<ConnectScreen> {
       _host.text = pi.baseUrl;
       if (pi.activeClassId != null) _classId.text = pi.activeClassId!;
     });
-    if (pi.activeClassId != null) _download();
+    if (pi.activeClassId != null) {
+      _download();
+    } else {
+      _watch(pi.baseUrl);
+    }
+  }
+
+  Future<void> _watch(String url) async {
+    await Preferences.setWatchedPi(url, _lang);
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text('Watching $url for next lecture · pull to refresh on Lectures'),
+      ),
+    );
+    context.pop();
   }
 
   @override
@@ -131,13 +147,18 @@ class _ConnectScreenState extends State<ConnectScreen> {
                   ),
                   title: Text(pi.activeTitle?.isNotEmpty == true
                       ? pi.activeTitle!
-                      : 'No class in session'),
+                      : 'Ready · no class yet'),
                   subtitle: Text([
                     pi.host,
                     if (pi.activeTeacher?.isNotEmpty == true) pi.activeTeacher!,
+                    if (!pi.hasActiveClass) 'tap to watch for the next lecture',
                   ].join(' · ')),
-                  enabled: pi.hasActiveClass && !_loading,
-                  trailing: const Icon(Icons.chevron_right),
+                  enabled: !_loading,
+                  trailing: Icon(
+                    pi.hasActiveClass
+                        ? Icons.chevron_right
+                        : Icons.notifications_active_outlined,
+                  ),
                   onTap: () => _useDiscovered(pi),
                 ),
               )),

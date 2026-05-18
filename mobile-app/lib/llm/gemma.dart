@@ -236,11 +236,13 @@ class GemmaService {
     required List<TranscriptLine> transcript,
     required List<KeyTerm> keyTerms,
     required String question,
+    String answerLanguageName = 'English',
   }) {
     return _serializeStream(() => _askWithToolsStreamInner(
           transcript: transcript,
           keyTerms: keyTerms,
           question: question,
+          answerLanguageName: answerLanguageName,
         ));
   }
 
@@ -248,6 +250,7 @@ class GemmaService {
     required List<TranscriptLine> transcript,
     required List<KeyTerm> keyTerms,
     required String question,
+    required String answerLanguageName,
   }) async* {
     if (_status != GemmaStatus.ready || _model == null) {
       throw StateError('Gemma not ready (status=$_status)');
@@ -302,6 +305,10 @@ class GemmaService {
           'quote_from_lecture for direct evidence, look_up_term for term '
           'definitions. After calling tools as needed, write a short, '
           'natural-language answer.\n\n'
+          'Write your reply in $answerLanguageName, regardless of which '
+          'language the student\'s question is in or which language the '
+          'transcript is in. The [OFF-TOPIC] marker below stays in English; '
+          'everything after it should be in $answerLanguageName.\n\n'
           'If the question is not answerable from the lecture transcript, '
           'start your reply with the literal token [OFF-TOPIC] (in brackets) '
           'and then explain in one sentence what the lecture actually covers. '

@@ -90,4 +90,31 @@ class Preferences {
     m['last_pi_base_url'] = url;
     await _write(m);
   }
+
+  /// "Watched" Pi: the lectures screen polls this Pi for new classes so the
+  /// user can pre-join before recording starts and lectures show up
+  /// automatically. Stores the base URL plus the language to fetch in.
+  static Future<({String url, String lang})?> getWatchedPi() async {
+    final m = await _read();
+    final url = m['watched_pi_url'];
+    final lang = m['watched_pi_lang'];
+    if (url is String && url.isNotEmpty && lang is String && lang.isNotEmpty) {
+      return (url: url, lang: lang);
+    }
+    return null;
+  }
+
+  static Future<void> setWatchedPi(String url, String lang) async {
+    final m = await _read();
+    m['watched_pi_url'] = url;
+    m['watched_pi_lang'] = lang;
+    await _write(m);
+  }
+
+  static Future<void> clearWatchedPi() async {
+    final m = await _read();
+    m.remove('watched_pi_url');
+    m.remove('watched_pi_lang');
+    await _write(m);
+  }
 }
