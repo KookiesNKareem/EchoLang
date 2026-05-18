@@ -193,7 +193,7 @@ class GemmaService {
         maxTokens: 4096,
         preferredBackend: PreferredBackend.gpu,
       );
-      _chat = await _model!.createChat();
+      _chat = await _createTunedChat();
       _status = GemmaStatus.ready;
       _statusMessage = 'Gemma 4 ready';
       for (final l in _listeners) {
@@ -205,6 +205,36 @@ class GemmaService {
       _readyFuture = null;
       rethrow;
     }
+  }
+
+  /// Wraps `_model.createChat()` with sampling parameters that prevent the
+  /// repetition loops produced by flutter_gemma's default `topK=1` (pure
+  /// greedy decoding). topK=40 + topP=0.95 gives the sampler enough diversity
+  /// to escape "X X X X" runs the model would otherwise lock into. Each
+  /// caller picks its own temperature: low (~0.3) for faithful tasks like
+  /// translation and JSON generation, higher (~0.7) for conversational Q&A.
+  Future<InferenceChat> _createTunedChat({
+    double temperature = 0.3,
+    int topK = 40,
+    double topP = 0.95,
+    int randomSeed = 0,
+    List<Tool> tools = const [],
+    bool? supportsFunctionCalls,
+    ModelType? modelType,
+    bool isThinking = false,
+  }) {
+    return _model!.createChat(
+      temperature: temperature,
+      topK: topK,
+      topP: topP,
+      randomSeed: randomSeed == 0
+          ? DateTime.now().millisecondsSinceEpoch & 0x7fffffff
+          : randomSeed,
+      tools: tools,
+      supportsFunctionCalls: supportsFunctionCalls,
+      modelType: modelType,
+      isThinking: isThinking,
+    );
   }
 
   /// Prime the chat with a lecture transcript so the prefill is paid once instead of on every question.
@@ -227,7 +257,7 @@ class GemmaService {
         'the transcript, say so plainly. Reply in the same language the '
         'student used.\n\n--- LECTURE TRANSCRIPT ---\n$trimmed\n--- END ---\n\n'
         'Reply with the single word ready.';
-    _chat = await _model!.createChat();
+    _chat = await _createTunedChat();
     await _chat!.addQueryChunk(Message.text(text: preamble, isUser: true));
     await _chat!.generateChatResponse();
     _primedContextHash = hash;
@@ -298,11 +328,12 @@ class GemmaService {
         },
       ),
     ];
-    final chat = await _model!.createChat(
+    final chat = await _createTunedChat(
       tools: tools,
       supportsFunctionCalls: true,
       modelType: ModelType.gemma4,
       isThinking: true,
+      temperature: 0.7,
     );
     _activeChats.add(chat);
     try {
@@ -501,7 +532,7 @@ class GemmaService {
           'You are a tutor helping a student review a lecture they attended. '
           'Use only what is in the transcript below. If the answer is not in '
           'the transcript, say so plainly.\n\n--- LECTURE TRANSCRIPT ---\n$trimmed\n--- END ---';
-      chat = await _model!.createChat();
+      chat = await _createTunedChat(temperature: 0.7);
       await chat.addQueryChunk(Message.text(text: preamble, isUser: true));
       await chat.addQueryChunk(Message.text(text: question, isUser: true));
     } else {
@@ -580,7 +611,7 @@ class GemmaService {
           '(e.g. "1. ..."). Do NOT add a preface, commentary, or extra '
           'lines. Keep the numbers as Western Arabic digits.\n\n'
           'Items:\n$numbered\n\nTranslations:';
-      final chat = await _model!.createChat();
+      final chat = await _createTunedChat();
       _activeChats.add(chat);
       final buf = StringBuffer();
       try {
@@ -675,7 +706,7 @@ class GemmaService {
           'Preserve sentence boundaries and paragraph breaks. Output ONLY the '
           'translated text — no preface, no commentary, no "Sure, here is...".'
           '\n\nEnglish:\n$chunk\n\n$targetLanguageName:';
-      final chat = await _model!.createChat();
+      final chat = await _createTunedChat();
       _activeChats.add(chat);
       try {
         await chat.addQueryChunk(Message.text(text: prompt, isUser: true));
@@ -775,7 +806,7 @@ class GemmaService {
         throw StateError('Gemma not ready (status=$_status)');
       }
       final prompt = _studyPackPrompt(_trimContext(transcript), languageName);
-      final chat = await _model!.createChat();
+      final chat = await _createTunedChat();
       _activeChats.add(chat);
       final String raw;
       try {
@@ -826,7 +857,7 @@ class GemmaService {
       throw StateError('Gemma not ready (status=$_status)');
     }
     final prompt = _studyPackPrompt(_trimContext(transcript), languageName);
-    final chat = await _model!.createChat();
+    final chat = await _createTunedChat();
     _activeChats.add(chat);
     final buf = StringBuffer();
     StudyPack lastEmitted = StudyPack(
@@ -973,7 +1004,7 @@ class GemmaService {
         '- Emit "items" in order so partial decoding can show questions as '
         'they land.\n\n'
         'Transcript:\n"""\n$trimmed\n"""\n\nJSON:';
-    final chat = await _model!.createChat();
+    final chat = await _createTunedChat();
     _activeChats.add(chat);
     final buf = StringBuffer();
     var lastYielded = 0;
