@@ -32,21 +32,24 @@ if [ ! -f "$WHISPER_MODEL" ]; then
   curl -L -o "$WHISPER_MODEL" \
     https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.en.bin
 fi
-# Tiny.en also fetched as a fast fallback (set LL_WHISPER_MODEL=ggml-tiny.en.bin).
-TINY_MODEL="$MODELS_DIR/ggml-tiny.en.bin"
-if [ ! -f "$TINY_MODEL" ]; then
-  curl -L -o "$TINY_MODEL" \
-    https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-tiny.en.bin
+
+echo "==> Installing Ollama (if not already present)..."
+if ! command -v ollama >/dev/null 2>&1; then
+  curl -fsSL https://ollama.com/install.sh | sh
 fi
 
-echo "==> Downloading Gemma 4 E2B Q4_K_M GGUF..."
-# Replace this with the canonical download URL once Gemma 4 GGUFs are mirrored.
-GEMMA_MODEL="$MODELS_DIR/gemma-4-E2B-it-Q4_K_M.gguf"
-if [ ! -f "$GEMMA_MODEL" ]; then
-  echo "Please download Gemma 4 E2B Q4_K_M from"
-  echo "  https://huggingface.co/google/gemma-4-E2B-it-GGUF"
-  echo "and place it at $GEMMA_MODEL"
-  exit 1
+echo "==> Ensuring Ollama service is running..."
+if command -v systemctl >/dev/null 2>&1; then
+  sudo systemctl enable --now ollama 2>/dev/null || true
 fi
+for _ in 1 2 3 4 5 6 7 8 9 10; do
+  if curl -fsS http://127.0.0.1:11434/api/tags >/dev/null 2>&1; then
+    break
+  fi
+  sleep 1
+done
+
+echo "==> Pulling Gemma 4 E2B via Ollama (default backend in app/config.py)..."
+ollama pull gemma4:e2b
 
 echo "==> Done. Run with:  source .venv/bin/activate && uvicorn app.main:app --host 0.0.0.0 --port 8080"
