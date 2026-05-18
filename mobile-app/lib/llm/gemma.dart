@@ -679,24 +679,29 @@ class GemmaService {
       _activeChats.add(chat);
       try {
         await chat.addQueryChunk(Message.text(text: prompt, isUser: true));
-        // Translation output should be roughly the size of the input. If it
-        // balloons past 3x we assume the model went into a repetition loop
-        // ("aula aula aula…") and stop the chunk before it eats the rest of
-        // the token budget and triggers a memory-pressure crash.
-        final maxChunkOutput = chunk.length * 3 + 200;
+        // Translation output should be roughly the size of the input.
+        // 1.8x cap catches obvious runaways; a sliding-window repetition
+        // detector below catches the subtler "aula aula aula" loops that
+        // stay under the size cap but produce visibly broken text.
+        final maxChunkOutput = (chunk.length * 1.8).round() + 120;
         var chunkOutput = 0;
+        final loopBuf = StringBuffer();
         await for (final piece in chat.generateChatResponseAsync()) {
+          String? out;
           switch (piece) {
             case TextResponse(:final token):
-              yield token;
-              chunkOutput += token.length;
+              out = token;
             case ThinkingResponse(:final content):
-              yield content;
-              chunkOutput += content.length;
+              out = content;
             default:
               break;
           }
+          if (out == null) continue;
+          yield out;
+          chunkOutput += out.length;
+          loopBuf.write(out);
           if (chunkOutput > maxChunkOutput) break;
+          if (_isRepetitionLoop(loopBuf.toString())) break;
         }
       } finally {
         _activeChats.remove(chat);
@@ -704,6 +709,28 @@ class GemmaService {
       }
       if (i < chunks.length - 1) yield '\n\n';
     }
+  }
+
+  /// Detect Gemma's repetition-loop failure mode (a short token sequence
+  /// emitted four or more times back-to-back). Looks at the tail of the
+  /// chunk output; cheap enough to run on every streamed token.
+  static bool _isRepetitionLoop(String s) {
+    if (s.length < 60) return false;
+    final tail = s.substring(s.length - 80);
+    // Try ngram lengths from 4 to 20 chars. If the same ngram appears 4+
+    // times consecutively at the tail, we're stuck in a loop.
+    for (var n = 4; n <= 20; n++) {
+      if (tail.length < n * 4) continue;
+      final candidate = tail.substring(tail.length - n);
+      var matches = 1;
+      var pos = tail.length - n * 2;
+      while (pos >= 0 && tail.substring(pos, pos + n) == candidate) {
+        matches += 1;
+        pos -= n;
+      }
+      if (matches >= 4) return true;
+    }
+    return false;
   }
 
   /// Split a transcript into chunks that fit comfortably under the 4096-token
