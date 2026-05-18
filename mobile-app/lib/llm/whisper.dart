@@ -242,9 +242,21 @@ class WhisperService {
     }
   }
 
+  /// Errors that are part of normal continuous-dictation operation and
+  /// should not be surfaced to the user. iOS fires these whenever there's
+  /// silence or audio that doesn't match a phrase — we just cycle and move on.
+  static const _quietErrors = {
+    'error_no_match',
+    'error_speech_timeout',
+    'error_no_speech_input',
+  };
+
   /// Speech.framework error callback; transient errors trigger session recycle.
   void _onNativeError(dynamic err) {
-    _lastErrorMessage = err.errorMsg;
+    final code = err.errorMsg?.toString() ?? '';
+    if (!_quietErrors.contains(code)) {
+      _lastErrorMessage = code;
+    }
     if (!_wantListening) return;
     if (err.permanent) {
       _wantListening = false;

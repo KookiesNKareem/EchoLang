@@ -81,7 +81,7 @@ def _extract_json(text: str) -> dict:
 
 def generate_english_pack(translator: GemmaTranslator, transcript: str) -> dict:
     prompt = _PROMPT.format(transcript=transcript)
-    raw = translator.generate(prompt, max_tokens=1024, temperature=0.4)
+    raw = translator.generate(prompt, max_tokens=768, temperature=0.4)
     try:
         return _extract_json(raw)
     except Exception as e:
@@ -93,24 +93,31 @@ def generate_english_pack(translator: GemmaTranslator, transcript: str) -> dict:
         }
 
 
+_TRANSLATE_PACK_PROMPT = """Translate every string value in this JSON into {name}.
+Keep the same JSON structure and keys. Output only the translated JSON, no
+commentary or code fence.
+
+Input JSON:
+{pack}
+
+{name} JSON:
+"""
+
+
 def translate_pack(translator: GemmaTranslator, pack: dict, target_lang: str) -> dict:
     if target_lang == "en":
         return pack
     name = LANG_NAMES.get(target_lang, target_lang)
-
-    def t(s: str) -> str:
-        if not s.strip():
-            return s
-        return translator.translate(s, target_lang)
-
-    return {
-        "summary": t(pack.get("summary", "")),
-        "key_terms": [
-            {"term": t(kt.get("term", "")), "definition": t(kt.get("definition", ""))}
-            for kt in pack.get("key_terms", [])
-        ],
-        "practice_questions": [t(q) for q in pack.get("practice_questions", [])],
-    }
+    prompt = _TRANSLATE_PACK_PROMPT.format(
+        name=name,
+        pack=json.dumps(pack, ensure_ascii=False),
+    )
+    try:
+        raw = translator.generate(prompt, max_tokens=1024, temperature=0.2)
+        return _extract_json(raw)
+    except Exception as e:
+        log.warning("bulk pack translation failed (%s); returning English pack", e)
+        return pack
 
 
 def build_study_pack(

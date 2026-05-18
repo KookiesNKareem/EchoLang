@@ -156,8 +156,7 @@ class OllamaTranslator:
         )
 
     def generate(self, prompt: str, max_tokens: int = 512, temperature: float = 0.3) -> str:
-        # Study-pack generation does benefit from reasoning. Bigger budget too.
-        return self._chat(prompt, max_tokens=max_tokens, temperature=temperature, think=True)
+        return self._chat(prompt, max_tokens=max_tokens, temperature=temperature, think=False)
 
     def warm_up(self) -> None:
         """Force the model into memory so the first real request doesn't pay

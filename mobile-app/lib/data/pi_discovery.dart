@@ -13,6 +13,7 @@ class PiNode {
   /// Bonjour instance name, e.g. "LocalLearning on raspberrypi"
   final String name;
   final String host; // e.g. "raspberrypi.local"
+  final String? ip;  // resolved A record — preferred over `.local` on iOS
   final int port;
   final String? activeClassId;
   final String? activeTitle;
@@ -23,13 +24,14 @@ class PiNode {
     required this.name,
     required this.host,
     required this.port,
+    this.ip,
     this.activeClassId,
     this.activeTitle,
     this.activeTeacher,
     this.langs = const [],
   });
 
-  String get baseUrl => 'http://$host:$port';
+  String get baseUrl => 'http://${ip ?? host}:$port';
   bool get hasActiveClass => activeClassId != null && activeClassId!.isNotEmpty;
 }
 
@@ -38,7 +40,7 @@ class PiDiscovery {
 
   /// Browse for [duration]; returns the set of discovered Pis.
   Future<List<PiNode>> browse({
-    Duration duration = const Duration(seconds: 4),
+    Duration duration = const Duration(seconds: 6),
   }) async {
     final client = MDnsClient();
     await client.start();
@@ -54,9 +56,11 @@ class PiDiscovery {
         await for (final srv in srvStream.timeout(const Duration(seconds: 2),
             onTimeout: (_) {})) {
           final txt = await _firstTxt(client, ptr.domainName);
+          final ip = await _firstIp(client, srv.target);
           final node = PiNode(
             name: ptr.domainName,
             host: srv.target,
+            ip: ip,
             port: srv.port,
             activeClassId: txt['class_id']?.isNotEmpty == true ? txt['class_id'] : null,
             activeTitle: txt['title']?.isNotEmpty == true ? txt['title'] : null,
@@ -70,6 +74,17 @@ class PiDiscovery {
       client.stop();
     }
     return found.values.toList();
+  }
+
+  Future<String?> _firstIp(MDnsClient client, String host) async {
+    try {
+      await for (final ip in client
+          .lookup<IPAddressResourceRecord>(ResourceRecordQuery.addressIPv4(host))
+          .timeout(const Duration(seconds: 2), onTimeout: (_) {})) {
+        return ip.address.address;
+      }
+    } catch (_) {}
+    return null;
   }
 
   Future<Map<String, String>> _firstTxt(MDnsClient client, String fullName) async {

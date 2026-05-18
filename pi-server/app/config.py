@@ -24,7 +24,7 @@ class Settings(BaseSettings):
 
     ollama_url: str = "http://127.0.0.1:11434"
     ollama_model: str = "gemma4:e2b"
-    ollama_timeout_s: float = 180.0
+    ollama_timeout_s: float = 600.0
     ollama_keep_alive: str = "24h"
 
     gemma_model: str = "gemma-4-E2B-it-Q4_K_M.gguf"

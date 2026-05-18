@@ -1,17 +1,14 @@
 from __future__ import annotations
 
 import asyncio
-import io
 import json
 import logging
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-import qrcode
 from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
-from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from sse_starlette.sse import EventSourceResponse
 
@@ -283,17 +280,6 @@ def get_class(class_id: str):
     }
 
 
-@app.get("/api/qr/{class_id}")
-def class_qr(class_id: str, request: Request):
-    base = str(request.base_url).rstrip("/")
-    join_url = f"{base}/join?class={class_id}"
-    img = qrcode.make(join_url)
-    buf = io.BytesIO()
-    img.save(buf, format="PNG")
-    buf.seek(0)
-    return Response(content=buf.getvalue(), media_type="image/png")
-
-
 @app.get("/api/stream/{class_id}/{lang}")
 async def stream(class_id: str, lang: str, request: Request):
     if lang not in settings.supported_languages and lang != "en":
@@ -362,17 +348,6 @@ def inject_caption(class_id: str, req: InjectCaptionReq):
     return {"ok": True}
 
 
-PWA_DIR = Path(__file__).resolve().parents[2] / "pwa"
-
-
 @app.get("/")
-@app.get("/join")
-def serve_pwa_root():
-    index = PWA_DIR / "index.html"
-    if not index.exists():
-        raise HTTPException(404, "PWA not built yet")
-    return FileResponse(index)
-
-
-if PWA_DIR.exists():
-    app.mount("/static", StaticFiles(directory=PWA_DIR), name="static")
+def root():
+    return {"ok": True, "service": "EchoLang Pi", "join_via": "mDNS or LAN IP"}

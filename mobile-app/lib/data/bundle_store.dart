@@ -74,7 +74,14 @@ class BundleStore {
   }) async {
     final base = piBaseUrl.replaceAll(RegExp(r'/$'), '');
     final url = Uri.parse('$base/api/lecture/$classId/bundle?lang=$lang');
-    final resp = await http.get(url);
+    final resp = await http
+        .get(url)
+        .timeout(const Duration(minutes: 10), onTimeout: () {
+      throw Exception(
+        'Pi took longer than 10 minutes to assemble the lecture bundle. '
+        'Study-pack generation may be stuck; check the Pi logs.',
+      );
+    });
     if (resp.statusCode != 200) {
       throw Exception('Pi returned ${resp.statusCode}: ${resp.body}');
     }

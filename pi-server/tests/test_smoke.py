@@ -26,10 +26,3 @@ def test_active_class_empty():
         assert r.status_code == 204
 
 
-def test_qr_for_unknown_class_still_renders():
-    # QR endpoint doesn't require a real class — useful for printing
-    # a "join here" code before class even starts.
-    with TestClient(main.app) as client:
-        r = client.get("/api/qr/test-class")
-        assert r.status_code == 200
-        assert r.headers["content-type"] == "image/png"
