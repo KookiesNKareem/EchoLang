@@ -541,46 +541,100 @@ class GemmaService {
     return QAStarters.fallback;
   }
 
-  /// Translate the fixed English starter strings into [targetLanguageName] so
-  /// the welcome card, hint, and suggestion chips can match whichever language
-  /// the user is asking in. One short translation call per field — each runs
-  /// in its own chat session via [translateStream] so the primed Q&A chat is
-  /// untouched. On any failure we fall back to the original field so the UI
-  /// never ends up blank.
+  /// Translate the fixed English starter strings into [targetLanguageName] in
+  /// a SINGLE chat session. Earlier versions ran one createChat per field;
+  /// six rapid native allocations right after primeContext spiked iOS memory
+  /// past the jetsam threshold on lower-RAM devices ("Translating to…" then
+  /// app death). One chat keeps peak memory the same as a normal translation.
+  /// Returns [base] unchanged on any model error or parse failure so the UI
+  /// degrades gracefully to English instead of crashing or blanking out.
   Future<QAStarters> localizeStarters({
     required QAStarters base,
     required String targetLanguageName,
-  }) async {
-    Future<String> tr(String s) async {
+  }) {
+    return _serialize(() async {
+      if (_status != GemmaStatus.ready || _model == null) return base;
+      final items = <String>[
+        base.hint,
+        base.welcomeTitle,
+        base.welcomeBody,
+        ...base.questions,
+      ];
+      final numbered = items
+          .asMap()
+          .entries
+          .map((e) => '${e.key + 1}. ${e.value}')
+          .join('\n');
+      final prompt =
+          'Translate each numbered item below into $targetLanguageName.\n'
+          'Output EXACTLY ${items.length} lines, one per item, in the same '
+          'order, each line prefixed with its original number and a period '
+          '(e.g. "1. ..."). Do NOT add a preface, commentary, or extra '
+          'lines. Keep the numbers as Western Arabic digits.\n\n'
+          'Items:\n$numbered\n\nTranslations:';
+      final chat = await _model!.createChat();
+      final buf = StringBuffer();
       try {
-        final buf = StringBuffer();
-        await for (final t in translateStream(
-          text: s,
-          targetLanguageName: targetLanguageName,
-        )) {
-          buf.write(t);
+        await chat.addQueryChunk(Message.text(text: prompt, isUser: true));
+        // Cap output at 3x input + slack to bail on repetition loops before
+        // they eat the token budget and trigger a memory-pressure crash.
+        final maxOutput = numbered.length * 3 + 200;
+        var outputLen = 0;
+        await for (final piece in chat.generateChatResponseAsync()) {
+          switch (piece) {
+            case TextResponse(:final token):
+              buf.write(token);
+              outputLen += token.length;
+            case ThinkingResponse(:final content):
+              buf.write(content);
+              outputLen += content.length;
+            default:
+              break;
+          }
+          if (outputLen > maxOutput) break;
         }
-        final out = buf.toString().trim();
-        return out.isEmpty ? s : out;
       } catch (_) {
-        return s;
+        return base;
+      } finally {
+        try { await chat.close(); } catch (_) {}
       }
-    }
+      final parsed = _parseNumberedTranslations(buf.toString(), items.length);
+      if (parsed == null) return base;
+      return QAStarters(
+        hint: parsed[0],
+        subtitle: base.subtitle,
+        welcomeTitle: parsed[1],
+        welcomeBody: parsed[2],
+        questions: parsed.sublist(3, 3 + base.questions.length),
+      );
+    });
+  }
 
-    final hint = await tr(base.hint);
-    final welcomeTitle = await tr(base.welcomeTitle);
-    final welcomeBody = await tr(base.welcomeBody);
-    final questions = <String>[];
-    for (final q in base.questions) {
-      questions.add(await tr(q));
+  /// Parse a numbered-list response into [expected] strings indexed 1..N.
+  /// Tolerates leading preface and intermixed blank lines, but requires every
+  /// number 1..[expected] to be present — otherwise returns null so the caller
+  /// can fall back to the source strings instead of showing a half-translated
+  /// UI.
+  List<String>? _parseNumberedTranslations(String raw, int expected) {
+    final markerRe = RegExp(r'(?:^|\n)\s*(\d+)\.\s*');
+    final matches = markerRe.allMatches(raw).toList();
+    if (matches.length < expected) return null;
+    final byNum = <int, String>{};
+    for (var i = 0; i < matches.length; i++) {
+      final n = int.tryParse(matches[i].group(1)!);
+      if (n == null || n < 1 || n > expected) continue;
+      final start = matches[i].end;
+      final end = i + 1 < matches.length ? matches[i + 1].start : raw.length;
+      final value = raw.substring(start, end).trim();
+      if (value.isNotEmpty) byNum.putIfAbsent(n, () => value);
     }
-    return QAStarters(
-      hint: hint,
-      subtitle: base.subtitle,
-      welcomeTitle: welcomeTitle,
-      welcomeBody: welcomeBody,
-      questions: questions,
-    );
+    final out = <String>[];
+    for (var n = 1; n <= expected; n++) {
+      final v = byNum[n];
+      if (v == null) return null;
+      out.add(v);
+    }
+    return out;
   }
 
   /// On-device translation. Streams the translated text token-by-token.
