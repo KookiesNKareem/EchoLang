@@ -1,0 +1,14 @@
+# Append these lines to /boot/firmware/config.txt on the Pi.
+# They configure the SPI bus so the BrainCraft HAT's display works
+# (the kernel must not claim the hardware CS pin GPIO 8, since Adafruit's
+# rgb-display library manages CS in software).
+
+dtoverlay=spi0-0cs
+
+# Separately, edit the Pi 5 EEPROM with:
+#   sudo -E rpi-eeprom-config --edit
+# and add or set:
+#   POWER_OFF_ON_HALT=1
+#   PSU_MAX_CURRENT=5000
+# Without POWER_OFF_ON_HALT=1, `shutdown -h now` halts the kernel but does
+# not cut power on the X1200, which keeps draining the UPS battery.

@@ -1,0 +1,26 @@
+[Unit]
+Description=EchoLang FastAPI server
+After=network-online.target ollama.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=kfareed
+Group=kfareed
+WorkingDirectory=/home/kfareed/EchoLang/pi-server
+Environment=PYTHONUNBUFFERED=1
+Environment=HOME=/home/kfareed
+# Whisper model selection. tiny.en gives ~3.5s inference on Pi 5 which keeps
+# streaming live; base.en is more accurate but ~11-22s/inference and falls
+# behind the 4s step.
+Environment=LL_WHISPER_MODEL=ggml-tiny.en.bin
+# Unload Gemma from RAM after 5 minutes idle. The default 24h keep-alive
+# pins ~5 GB resident and pushes the Pi 5 close to OOM during study-pack
+# generation.
+Environment=LL_OLLAMA_KEEP_ALIVE=5m
+ExecStart=/home/kfareed/EchoLang/pi-server/.venv/bin/uvicorn app.main:app --host 0.0.0.0 --port 8080
+Restart=on-failure
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target

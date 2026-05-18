@@ -1,0 +1,22 @@
+# ALSA default device — routes capture through ALSA's plug wrapper so
+# PortAudio (used by sounddevice) gets automatic 48 kHz -> 16 kHz resampling
+# from the USB mic. The `asym` block pairs a null playback with the real
+# capture so PortAudio can negotiate a complete (in, out) device pair
+# without erroring on "Illegal combination of I/O devices" (PaErrorCode -9993).
+#
+# `hw:0,0` assumes the USB microphone is card 0. If `arecord -l` shows it
+# at a different index, edit the slave.pcm line and the `card N` line to
+# match. The card index can shift across reboots on the Pi 5; if you hit
+# this in practice, swap to addressing by name with `hw:CARD=<name>`.
+pcm.!default {
+  type asym
+  playback.pcm "null"
+  capture.pcm {
+    type plug
+    slave.pcm "hw:0,0"
+  }
+}
+ctl.!default {
+  type hw
+  card 0
+}

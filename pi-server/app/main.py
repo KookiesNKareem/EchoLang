@@ -183,13 +183,26 @@ def start_class(req: StartClassReq):
 
 @app.post("/api/class/{class_id}/end")
 def end_class(class_id: str):
+    """End a class.
+
+    PATCH: drain the transcriber BEFORE marking the class ended, so the final
+    transcription pass (which captures speech that was in the buffer when stop
+    was pressed) emits captions while the class is still active. The default
+    upstream `transcriber.stop()` is replaced with `transcriber.finalize()`,
+    which immediately stops audio capture (so silence doesn't wash the trailing
+    speech out of the rolling buffer) and runs one last transcription pass on
+    the frozen buffer with a relaxed short-suffix threshold.
+    """
     global transcriber
-    session = store.end_class(class_id)
-    if session is None:
+    if store.get(class_id) is None:
         raise HTTPException(404, "Class not found")
     if transcriber is not None:
-        transcriber.stop()
+        if hasattr(transcriber, "finalize"):
+            transcriber.finalize()
+        else:
+            transcriber.stop()
         transcriber = None
+    session = store.end_class(class_id)
     adv = get_advertiser()
     if adv is not None:
         adv.refresh()
