@@ -1,0 +1,18 @@
+[Unit]
+Description=EchoLang recording controller (BrainCraft HAT button + display)
+After=echolang.service
+Wants=echolang.service
+
+[Service]
+Type=simple
+User=kfareed
+Group=kfareed
+WorkingDirectory=/home/kfareed/EchoLang/pi5-hardware
+Environment=PYTHONUNBUFFERED=1
+Environment=HOME=/home/kfareed
+ExecStart=/home/kfareed/EchoLang/pi-server/.venv/bin/python3 /home/kfareed/EchoLang/pi5-hardware/echolang_controller.py
+Restart=on-failure
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,13 @@
+# Extra deps for the BrainCraft HAT controller and X1200 UPS monitor.
+# Install into pi-server's venv with:
+#   source ~/EchoLang/pi-server/.venv/bin/activate
+#   pip install -r requirements-hardware.txt
+adafruit-blinka
+adafruit-circuitpython-rgb-display
+gpiozero
+lgpio
+gpiod
+smbus2
+Pillow
+numpy
+requests

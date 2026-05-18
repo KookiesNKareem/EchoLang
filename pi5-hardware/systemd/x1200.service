@@ -1,0 +1,15 @@
+[Unit]
+Description=X1200 UPS monitor
+After=multi-user.target
+
+[Service]
+Type=simple
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/usr/bin/python3 -u /home/kfareed/EchoLang/pi5-hardware/x1200_monitor.py
+ExecStopPost=/bin/rm -f /var/run/X1200.pid
+Restart=on-failure
+RestartSec=10
+User=root
+
+[Install]
+WantedBy=multi-user.target
