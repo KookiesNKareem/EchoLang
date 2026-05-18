@@ -110,6 +110,67 @@ entirely from skipping redundant prefill on the lecture context.
 All answers in both modes were factually correct and grounded in the
 provided transcript context.
 
+## Trying it yourself
+
+The **standalone flow** is the fastest way to evaluate the project — no Pi
+required, no network after install. The mobile app ships a seeded sample
+lecture ("Intro to Cell Biology" and "The Singular Value Decomposition"),
+so on first launch you can immediately translate, ask Gemma questions, and
+take a generated quiz, entirely on-device.
+
+### Mobile app — iOS
+
+Requires macOS with Xcode 16+, a physical iPhone with ~6 GB+ RAM (iPhone 13
+or newer is comfortable), and an Apple ID for free signing.
+
+```bash
+cd mobile-app
+flutter pub get
+cd ios && pod install && cd ..
+open ios/Runner.xcworkspace
+# In Xcode: select your iPhone, set the team to your Apple ID under
+# Signing & Capabilities, then ⌘R. First launch downloads ~3 GB of Gemma 4
+# weights from Hugging Face into the app's sandbox.
+```
+
+The MTP-enabled `.litertlm` is fetched at first launch from
+`huggingface.co/metricspace/gemma4-E2B-it-litert-64k-mtp` — no token needed.
+
+### Mobile app — Android
+
+Requires Android Studio (or just the command-line tools + a JDK 17 + Android
+SDK 34), a physical Android phone with ~6 GB+ RAM, and USB debugging
+enabled.
+
+```bash
+cd mobile-app
+flutter pub get
+flutter build apk --release
+# APK lands at build/app/outputs/flutter-apk/app-release.apk
+adb install build/app/outputs/flutter-apk/app-release.apk
+```
+
+The Android build uses the same Gemma 4 E2B `.litertlm` URL. MediaPipe's
+Android backend doesn't accelerate via MTP today, so first-token latency on
+Android is comparable to the "fresh chat" baseline in the benchmark table
+above; the primed-chat speedup still applies.
+
+### Classroom flow — Raspberry Pi 5
+
+Optional, only if you want to see the live-captions side. Requires a Pi 5
+(8 GB), a USB mic, and ~10 GB free disk for whisper + Gemma weights.
+
+```bash
+git clone https://github.com/KookiesNKareem/EchoLang.git
+cd EchoLang/pi-server
+bash scripts/setup-pi.sh         # installs Ollama, pulls gemma4:e2b, downloads whisper
+source .venv/bin/activate
+uvicorn app.main:app --host 0.0.0.0 --port 8080
+```
+
+Then on any phone or laptop in the same WiFi, open `http://<pi-ip>:8080/`
+to get the student PWA with live captions and the language picker.
+
 ## Status
 
 In development for the 2026-05-18 deadline.
