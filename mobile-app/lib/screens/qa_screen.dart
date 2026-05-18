@@ -42,8 +42,14 @@ class _QAScreenState extends State<QAScreen> with SingleTickerProviderStateMixin
   bool _cancelGeneration = false;
   bool _answerInEnglish = false;
   String? _modelStatus;
-  /// Static starter content (avoids iOS state-leak issue).
-  final QAStarters _starters = QAStarters.fallback;
+  /// Localized starter content per language code. 'en' is always [QAStarters.fallback];
+  /// other codes are populated lazily by [_ensureStartersForCurrentLang].
+  final Map<String, QAStarters> _startersByLang = {'en': QAStarters.fallback};
+  /// Language code currently being localized, if any — guards against
+  /// kicking off duplicate translation runs.
+  String? _localizingLang;
+  QAStarters get _starters =>
+      _startersByLang[_answerLanguageCode()] ?? QAStarters.fallback;
 
   @override
   void initState() {
@@ -100,6 +106,7 @@ class _QAScreenState extends State<QAScreen> with SingleTickerProviderStateMixin
     final ctx = _lecture!.transcript.map((l) => l.text).join(' ');
     unawaited(widget.gemma.primeContext(ctx).catchError((_) {}));
     _maybeLoadStarters();
+    _ensureStartersForCurrentLang();
   }
 
   /// Kept for compatibility with _maybePrewarm.
@@ -112,10 +119,43 @@ class _QAScreenState extends State<QAScreen> with SingleTickerProviderStateMixin
 
   bool _canToggleLanguage() => _lectureLangCode() != 'en';
 
-  String _answerLanguageName() =>
+  String _answerLanguageCode() =>
       (_answerInEnglish || !_canToggleLanguage())
-          ? 'English'
-          : _lectureLanguageName();
+          ? 'en'
+          : _lectureLangCode();
+
+  String _answerLanguageName() =>
+      langNames[_answerLanguageCode()] ?? 'English';
+
+  /// Kick off a one-shot translation of the static English starter strings
+  /// into the active answer language, if not already cached or running.
+  void _ensureStartersForCurrentLang() {
+    final code = _answerLanguageCode();
+    if (code == 'en') return;
+    if (_startersByLang.containsKey(code)) return;
+    if (_localizingLang == code) return;
+    if (widget.gemma.status != GemmaStatus.ready) return;
+    _localizingLang = code;
+    final targetName = _answerLanguageName();
+    () async {
+      try {
+        final localized = await widget.gemma.localizeStarters(
+          base: QAStarters.fallback,
+          targetLanguageName: targetName,
+        );
+        if (!mounted) return;
+        setState(() {
+          _startersByLang[code] = localized;
+          if (_localizingLang == code) _localizingLang = null;
+        });
+      } catch (_) {
+        if (!mounted) return;
+        setState(() {
+          if (_localizingLang == code) _localizingLang = null;
+        });
+      }
+    }();
+  }
 
   Future<void> _send([String? prefilled]) async {
     final q = (prefilled ?? _input.text).trim();
@@ -240,6 +280,7 @@ class _QAScreenState extends State<QAScreen> with SingleTickerProviderStateMixin
                   onChanged: (v) {
                     HapticFeedback.selectionClick();
                     setState(() => _answerInEnglish = v);
+                    _ensureStartersForCurrentLang();
                   },
                 ),
               ),
@@ -250,7 +291,11 @@ class _QAScreenState extends State<QAScreen> with SingleTickerProviderStateMixin
         children: [
           Expanded(
             child: _messages.isEmpty
-                ? _Welcome(starters: _starters)
+                ? (_localizingLang != null
+                    ? _LocalizingPlaceholder(
+                        languageName: _answerLanguageName(),
+                      )
+                    : _Welcome(starters: _starters))
                 : ListView.builder(
                     controller: _scroll,
                     padding: const EdgeInsets.fromLTRB(16, 16, 16, 8),
@@ -269,7 +314,9 @@ class _QAScreenState extends State<QAScreen> with SingleTickerProviderStateMixin
                     },
                   ),
           ),
-          if (_starters.questions.isNotEmpty && _messages.isEmpty)
+          if (_starters.questions.isNotEmpty &&
+              _messages.isEmpty &&
+              _localizingLang == null)
             _SuggestionRow(
               questions: _starters.questions,
               onPick: _send,
@@ -281,6 +328,39 @@ class _QAScreenState extends State<QAScreen> with SingleTickerProviderStateMixin
             hintText: _starters.hint,
             onSubmit: () => _send(),
             onStop: _stop,
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _LocalizingPlaceholder extends StatelessWidget {
+  final String languageName;
+  const _LocalizingPlaceholder({required this.languageName});
+
+  @override
+  Widget build(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
+    return Center(
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          SizedBox(
+            width: 28, height: 28,
+            child: CircularProgressIndicator(
+              strokeWidth: 2.2,
+              color: cs.primary,
+            ),
+          ),
+          const SizedBox(height: 18),
+          Text(
+            'Translating to $languageName…',
+            style: TextStyle(
+              fontSize: 13,
+              letterSpacing: 0.2,
+              color: Colors.white.withValues(alpha: 0.65),
+            ),
           ),
         ],
       ),

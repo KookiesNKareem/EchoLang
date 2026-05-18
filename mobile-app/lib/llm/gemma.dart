@@ -541,6 +541,48 @@ class GemmaService {
     return QAStarters.fallback;
   }
 
+  /// Translate the fixed English starter strings into [targetLanguageName] so
+  /// the welcome card, hint, and suggestion chips can match whichever language
+  /// the user is asking in. One short translation call per field — each runs
+  /// in its own chat session via [translateStream] so the primed Q&A chat is
+  /// untouched. On any failure we fall back to the original field so the UI
+  /// never ends up blank.
+  Future<QAStarters> localizeStarters({
+    required QAStarters base,
+    required String targetLanguageName,
+  }) async {
+    Future<String> tr(String s) async {
+      try {
+        final buf = StringBuffer();
+        await for (final t in translateStream(
+          text: s,
+          targetLanguageName: targetLanguageName,
+        )) {
+          buf.write(t);
+        }
+        final out = buf.toString().trim();
+        return out.isEmpty ? s : out;
+      } catch (_) {
+        return s;
+      }
+    }
+
+    final hint = await tr(base.hint);
+    final welcomeTitle = await tr(base.welcomeTitle);
+    final welcomeBody = await tr(base.welcomeBody);
+    final questions = <String>[];
+    for (final q in base.questions) {
+      questions.add(await tr(q));
+    }
+    return QAStarters(
+      hint: hint,
+      subtitle: base.subtitle,
+      welcomeTitle: welcomeTitle,
+      welcomeBody: welcomeBody,
+      questions: questions,
+    );
+  }
+
   /// On-device translation. Streams the translated text token-by-token.
   /// Runs in a fresh chat session so it doesn't clobber the primed Q&A chat
   /// for whichever lecture is currently open.
