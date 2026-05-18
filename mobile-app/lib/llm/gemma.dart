@@ -117,6 +117,12 @@ class GemmaService {
   InferenceModel? _model;
   InferenceChat? _chat;
   int? _primedContextHash;
+  /// Transient chats currently mid-generation. Tracked so we can proactively
+  /// close them when the app is about to be suspended or torn down — otherwise
+  /// the LiteRT-LM worker thread keeps streaming tokens and eventually fires
+  /// an FFI callback into a destroyed Dart isolate, crashing the app on
+  /// teardown (Dart asserts in GetFfiCallbackMetadata).
+  final Set<InferenceChat> _activeChats = {};
   /// Serialization gate to prevent concurrent createChat() calls that leak context on iOS.
   Future<void> _inferenceGate = Future.value();
 
@@ -298,6 +304,7 @@ class GemmaService {
       modelType: ModelType.gemma4,
       isThinking: true,
     );
+    _activeChats.add(chat);
     try {
       final preamble =
           'You are a tutor helping a student review a lecture they attended. '
@@ -349,6 +356,7 @@ class GemmaService {
         }
       }
     } finally {
+      _activeChats.remove(chat);
       try { await chat.close(); } catch (_) {}
     }
   }
@@ -573,6 +581,7 @@ class GemmaService {
           'lines. Keep the numbers as Western Arabic digits.\n\n'
           'Items:\n$numbered\n\nTranslations:';
       final chat = await _model!.createChat();
+      _activeChats.add(chat);
       final buf = StringBuffer();
       try {
         await chat.addQueryChunk(Message.text(text: prompt, isUser: true));
@@ -596,6 +605,7 @@ class GemmaService {
       } catch (_) {
         return base;
       } finally {
+        _activeChats.remove(chat);
         try { await chat.close(); } catch (_) {}
       }
       final parsed = _parseNumberedTranslations(buf.toString(), items.length);
@@ -666,6 +676,7 @@ class GemmaService {
           'translated text — no preface, no commentary, no "Sure, here is...".'
           '\n\nEnglish:\n$chunk\n\n$targetLanguageName:';
       final chat = await _model!.createChat();
+      _activeChats.add(chat);
       try {
         await chat.addQueryChunk(Message.text(text: prompt, isUser: true));
         // Translation output should be roughly the size of the input. If it
@@ -688,6 +699,7 @@ class GemmaService {
           if (chunkOutput > maxChunkOutput) break;
         }
       } finally {
+        _activeChats.remove(chat);
         try { await chat.close(); } catch (_) {}
       }
       if (i < chunks.length - 1) yield '\n\n';
@@ -737,12 +749,14 @@ class GemmaService {
       }
       final prompt = _studyPackPrompt(_trimContext(transcript), languageName);
       final chat = await _model!.createChat();
+      _activeChats.add(chat);
       final String raw;
       try {
         await chat.addQueryChunk(Message.text(text: prompt, isUser: true));
         final response = await chat.generateChatResponse();
         raw = _extractText(response);
       } finally {
+        _activeChats.remove(chat);
         try { await chat.close(); } catch (_) {}
       }
       final json = _extractJson(raw);
@@ -786,6 +800,7 @@ class GemmaService {
     }
     final prompt = _studyPackPrompt(_trimContext(transcript), languageName);
     final chat = await _model!.createChat();
+    _activeChats.add(chat);
     final buf = StringBuffer();
     StudyPack lastEmitted = StudyPack(
       lang: lang, summary: '', keyTerms: const [], practiceQuestions: const [],
@@ -808,6 +823,7 @@ class GemmaService {
         }
       }
     } finally {
+      _activeChats.remove(chat);
       try { await chat.close(); } catch (_) {}
     }
     final finalJson = _extractJson(buf.toString());
@@ -931,6 +947,7 @@ class GemmaService {
         'they land.\n\n'
         'Transcript:\n"""\n$trimmed\n"""\n\nJSON:';
     final chat = await _model!.createChat();
+    _activeChats.add(chat);
     final buf = StringBuffer();
     var lastYielded = 0;
     try {
@@ -951,6 +968,7 @@ class GemmaService {
         }
       }
     } finally {
+      _activeChats.remove(chat);
       try { await chat.close(); } catch (_) {}
     }
     final finalItems = _parseQuizItems(buf.toString());
@@ -995,10 +1013,28 @@ class GemmaService {
   void unload() {
     _chat = null;
     _primedContextHash = null;
+    _activeChats.clear();
     _model?.close();
     _model = null;
     _readyFuture = null;
     _status = GemmaStatus.notReady;
+  }
+
+  /// Close every transient chat currently mid-generation. Call this from an
+  /// app-lifecycle observer when the app is about to be backgrounded or
+  /// torn down — closing the chat tells the LiteRT-LM worker thread to stop
+  /// emitting tokens, closing the window in which it could fire a Dart FFI
+  /// callback into a destroyed isolate (crash mode observed in TestFlight on
+  /// tester devices: dart::Assert::Fail inside DLRT_GetFfiCallbackMetadata).
+  /// Streams whose chats get closed externally observe the chat-side stream
+  /// completing naturally, then run their normal finally cleanup.
+  Future<void> cancelAllInflight() async {
+    if (_activeChats.isEmpty) return;
+    final chats = List.of(_activeChats);
+    _activeChats.clear();
+    for (final c in chats) {
+      try { await c.close(); } catch (_) {}
+    }
   }
 
   /// Drop the current chat session but keep the loaded model. Forces the

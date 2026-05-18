@@ -65,7 +65,8 @@ class LocalLearningApp extends StatefulWidget {
   State<LocalLearningApp> createState() => _LocalLearningAppState();
 }
 
-class _LocalLearningAppState extends State<LocalLearningApp> {
+class _LocalLearningAppState extends State<LocalLearningApp>
+    with WidgetsBindingObserver {
   final _store = BundleStore();
   final _gemma = GemmaService();
   final _whisper = WhisperService();
@@ -73,6 +74,7 @@ class _LocalLearningAppState extends State<LocalLearningApp> {
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     WidgetsBinding.instance.addPostFrameCallback((_) {
       _whisper.ensureReady().catchError((_) {});
       _gemma.ensureReady().catchError((_) {}).then((_) {
@@ -84,9 +86,25 @@ class _LocalLearningAppState extends State<LocalLearningApp> {
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     _gemma.unload();
     _whisper.unload();
     super.dispose();
+  }
+
+  /// Close any in-flight Gemma inference before iOS suspends or kills us.
+  /// Otherwise the LiteRT-LM worker keeps streaming tokens and fires an FFI
+  /// callback into a torn-down Dart isolate, crashing on teardown with
+  /// dart::Assert::Fail in GetFfiCallbackMetadata. The loaded model stays in
+  /// memory so resuming the app is instant — only mid-generation chats are
+  /// closed.
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.paused ||
+        state == AppLifecycleState.detached ||
+        state == AppLifecycleState.hidden) {
+      unawaited(_gemma.cancelAllInflight());
+    }
   }
 
   @override
