@@ -101,6 +101,10 @@ class WhisperTranscriber:
         self._session_start: datetime | None = None
 
         self._whisper = self._load_model()
+        # Probed once on the first transcription call. Different pywhispercpp
+        # versions accept different kwargs; we detect what works rather than
+        # crashing if the build doesn't plumb e.g. initial_prompt.
+        self._extra_kwargs: dict | None = None
 
     def _load_model(self):
         # Lazy import so the rest of the app can be unit-tested without the
@@ -151,12 +155,38 @@ class WhisperTranscriber:
                 continue
 
             try:
-                segments = self._whisper.transcribe(self._buffer, language="en")
+                segments = self._transcribe(self._buffer)
             except Exception as e:  # noqa: BLE001 - whisper failures shouldn't kill the loop
                 log.exception("whisper error: %s", e)
                 continue
 
             self._emit(segments)
+
+    def _transcribe(self, audio):
+        """Wrap whisper.transcribe with the best kwargs the build accepts."""
+        if self._extra_kwargs is None:
+            # First call: probe what kwargs work. Bias toward classroom
+            # vocabulary and a tighter no-speech threshold to suppress
+            # tiny.en's "you / thank you" hallucinations on silence.
+            candidates = {
+                "initial_prompt": (
+                    "Classroom lecture. The teacher is speaking. "
+                    "Topics may include math, biology, physics, history."
+                ),
+                "no_speech_thold": 0.6,
+                "suppress_blank": True,
+            }
+            for k, v in list(candidates.items()):
+                try:
+                    self._whisper.transcribe(audio, language="en", **{k: v})
+                except TypeError:
+                    candidates.pop(k)
+                except Exception:
+                    # Non-signature error — keep the kwarg, real call will retry.
+                    pass
+            self._extra_kwargs = candidates
+            log.info("whisper kwargs supported: %s", list(self._extra_kwargs.keys()))
+        return self._whisper.transcribe(audio, language="en", **self._extra_kwargs)
 
     def _emit(self, segments) -> None:
         # Figure out the audio time of the start of the buffer
@@ -176,9 +206,15 @@ class WhisperTranscriber:
                 continue
             if seg_start_s < self._emitted_until_s:
                 continue
-            # Don't emit segments that touch the very end of the buffer —
-            # they may still be partial.
-            if buffer_end_s - seg_end_s < (self.step_ms / 1000.0) / 2:
+            # Don't emit segments that touch the very last 500ms of the
+            # buffer — those are most likely still being transcribed. With
+            # a 30s window this only delays a single segment by one step,
+            # not a meaningful share of the audio.
+            if buffer_end_s - seg_end_s < 0.5:
+                continue
+            # Filter Whisper's classic empty-audio hallucinations.
+            low = text.lower().strip(".!? ")
+            if low in {"you", "thank you", "thanks for watching", "thanks", "."}:
                 continue
             assert self._session_start is not None
             started_at = self._session_start + timedelta(seconds=seg_start_s)

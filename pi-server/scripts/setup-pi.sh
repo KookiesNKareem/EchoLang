@@ -26,10 +26,16 @@ source .venv/bin/activate
 pip install --upgrade pip wheel
 pip install -r requirements.txt
 
-echo "==> Downloading whisper.cpp tiny.en model..."
-WHISPER_MODEL="$MODELS_DIR/ggml-tiny.en.bin"
+echo "==> Downloading whisper.cpp base.en model (better accuracy than tiny.en)..."
+WHISPER_MODEL="$MODELS_DIR/ggml-base.en.bin"
 if [ ! -f "$WHISPER_MODEL" ]; then
   curl -L -o "$WHISPER_MODEL" \
+    https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.en.bin
+fi
+# Tiny.en also fetched as a fast fallback (set LL_WHISPER_MODEL=ggml-tiny.en.bin).
+TINY_MODEL="$MODELS_DIR/ggml-tiny.en.bin"
+if [ ! -f "$TINY_MODEL" ]; then
+  curl -L -o "$TINY_MODEL" \
     https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-tiny.en.bin
 fi
 

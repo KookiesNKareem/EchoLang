@@ -15,9 +15,15 @@ class Settings(BaseSettings):
     data_dir: Path = Path("./data")
     models_dir: Path = Path("./models")
 
-    whisper_model: str = "ggml-tiny.en.bin"
+    # base.en (~150 MB) is noticeably more accurate than tiny.en for
+    # classroom audio and still real-time on Pi 5 with 4 threads. Override
+    # with LL_WHISPER_MODEL=ggml-tiny.en.bin if compute is constrained.
+    whisper_model: str = "ggml-base.en.bin"
+    # Long context window (~30s) gives Whisper enough audio to segment
+    # phrases cleanly; a 4s step gives base.en time to finish each pass on
+    # Pi 5 without falling behind.
     whisper_step_ms: int = 4000
-    whisper_length_ms: int = 8000
+    whisper_length_ms: int = 30000
     whisper_threads: int = 4
 
     backend: str = "ollama"
