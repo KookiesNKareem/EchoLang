@@ -295,50 +295,54 @@ class GemmaService {
       modelType: ModelType.gemma4,
       isThinking: true,
     );
-    final preamble =
-        'You are a tutor helping a student review a lecture they attended. '
-        'You have two tools you SHOULD use to ground every factual claim: '
-        'quote_from_lecture for direct evidence, look_up_term for term '
-        'definitions. After calling tools as needed, write a short, '
-        'natural-language answer.\n\n'
-        'If the question is not answerable from the lecture transcript, '
-        'start your reply with the literal token [OFF-TOPIC] (in brackets) '
-        'and then explain in one sentence what the lecture actually covers. '
-        'Do not invent answers. Do not pretend the lecture covered something '
-        'it did not.\n\n'
-        '--- LECTURE TRANSCRIPT ---\n$trimmed\n--- END ---';
-    await chat.addQueryChunk(Message.text(text: preamble, isUser: true));
-    await chat.addQueryChunk(Message.text(text: question, isUser: true));
+    try {
+      final preamble =
+          'You are a tutor helping a student review a lecture they attended. '
+          'You have two tools you SHOULD use to ground every factual claim: '
+          'quote_from_lecture for direct evidence, look_up_term for term '
+          'definitions. After calling tools as needed, write a short, '
+          'natural-language answer.\n\n'
+          'If the question is not answerable from the lecture transcript, '
+          'start your reply with the literal token [OFF-TOPIC] (in brackets) '
+          'and then explain in one sentence what the lecture actually covers. '
+          'Do not invent answers. Do not pretend the lecture covered something '
+          'it did not.\n\n'
+          '--- LECTURE TRANSCRIPT ---\n$trimmed\n--- END ---';
+      await chat.addQueryChunk(Message.text(text: preamble, isUser: true));
+      await chat.addQueryChunk(Message.text(text: question, isUser: true));
 
-    var sawCalls = true;
-    while (sawCalls) {
-      sawCalls = false;
-      await for (final chunk in chat.generateChatResponseAsync()) {
-        switch (chunk) {
-          case TextResponse(:final token):
-            yield AskText(token);
-          case ThinkingResponse(:final content):
-            yield AskThinking(content);
-          case FunctionCallResponse(:final name, :final args):
-            sawCalls = true;
-            final result = _dispatchTool(name, args, transcript, keyTerms);
-            yield AskCitation(Citation(toolName: name, args: args, result: result));
-            await chat.addQueryChunk(
-              Message.toolResponse(toolName: name, response: result),
-            );
-          case ParallelFunctionCallResponse(:final calls):
-            sawCalls = true;
-            for (final c in calls) {
-              final result = _dispatchTool(c.name, c.args, transcript, keyTerms);
-              yield AskCitation(
-                Citation(toolName: c.name, args: c.args, result: result),
-              );
+      var sawCalls = true;
+      while (sawCalls) {
+        sawCalls = false;
+        await for (final chunk in chat.generateChatResponseAsync()) {
+          switch (chunk) {
+            case TextResponse(:final token):
+              yield AskText(token);
+            case ThinkingResponse(:final content):
+              yield AskThinking(content);
+            case FunctionCallResponse(:final name, :final args):
+              sawCalls = true;
+              final result = _dispatchTool(name, args, transcript, keyTerms);
+              yield AskCitation(Citation(toolName: name, args: args, result: result));
               await chat.addQueryChunk(
-                Message.toolResponse(toolName: c.name, response: result),
+                Message.toolResponse(toolName: name, response: result),
               );
-            }
+            case ParallelFunctionCallResponse(:final calls):
+              sawCalls = true;
+              for (final c in calls) {
+                final result = _dispatchTool(c.name, c.args, transcript, keyTerms);
+                yield AskCitation(
+                  Citation(toolName: c.name, args: c.args, result: result),
+                );
+                await chat.addQueryChunk(
+                  Message.toolResponse(toolName: c.name, response: result),
+                );
+              }
+          }
         }
       }
+    } finally {
+      try { await chat.close(); } catch (_) {}
     }
   }
 
@@ -559,16 +563,29 @@ class GemmaService {
           'translated text — no preface, no commentary, no "Sure, here is...".'
           '\n\nEnglish:\n$chunk\n\n$targetLanguageName:';
       final chat = await _model!.createChat();
-      await chat.addQueryChunk(Message.text(text: prompt, isUser: true));
-      await for (final piece in chat.generateChatResponseAsync()) {
-        switch (piece) {
-          case TextResponse(:final token):
-            yield token;
-          case ThinkingResponse(:final content):
-            yield content;
-          default:
-            break;
+      try {
+        await chat.addQueryChunk(Message.text(text: prompt, isUser: true));
+        // Translation output should be roughly the size of the input. If it
+        // balloons past 3x we assume the model went into a repetition loop
+        // ("aula aula aula…") and stop the chunk before it eats the rest of
+        // the token budget and triggers a memory-pressure crash.
+        final maxChunkOutput = chunk.length * 3 + 200;
+        var chunkOutput = 0;
+        await for (final piece in chat.generateChatResponseAsync()) {
+          switch (piece) {
+            case TextResponse(:final token):
+              yield token;
+              chunkOutput += token.length;
+            case ThinkingResponse(:final content):
+              yield content;
+              chunkOutput += content.length;
+            default:
+              break;
+          }
+          if (chunkOutput > maxChunkOutput) break;
         }
+      } finally {
+        try { await chat.close(); } catch (_) {}
       }
       if (i < chunks.length - 1) yield '\n\n';
     }
@@ -617,9 +634,14 @@ class GemmaService {
       }
       final prompt = _studyPackPrompt(_trimContext(transcript), languageName);
       final chat = await _model!.createChat();
-      await chat.addQueryChunk(Message.text(text: prompt, isUser: true));
-      final response = await chat.generateChatResponse();
-      final raw = _extractText(response);
+      final String raw;
+      try {
+        await chat.addQueryChunk(Message.text(text: prompt, isUser: true));
+        final response = await chat.generateChatResponse();
+        raw = _extractText(response);
+      } finally {
+        try { await chat.close(); } catch (_) {}
+      }
       final json = _extractJson(raw);
       return StudyPack(
         lang: lang,
@@ -661,25 +683,29 @@ class GemmaService {
     }
     final prompt = _studyPackPrompt(_trimContext(transcript), languageName);
     final chat = await _model!.createChat();
-    await chat.addQueryChunk(Message.text(text: prompt, isUser: true));
     final buf = StringBuffer();
     StudyPack lastEmitted = StudyPack(
       lang: lang, summary: '', keyTerms: const [], practiceQuestions: const [],
     );
-    await for (final chunk in chat.generateChatResponseAsync()) {
-      switch (chunk) {
-        case TextResponse(:final token):
-          buf.write(token);
-        case ThinkingResponse(:final content):
-          buf.write(content);
-        default:
-          break;
+    try {
+      await chat.addQueryChunk(Message.text(text: prompt, isUser: true));
+      await for (final chunk in chat.generateChatResponseAsync()) {
+        switch (chunk) {
+          case TextResponse(:final token):
+            buf.write(token);
+          case ThinkingResponse(:final content):
+            buf.write(content);
+          default:
+            break;
+        }
+        final partial = _parsePartialStudyPack(buf.toString(), lang);
+        if (partial != null && _packDiffers(partial, lastEmitted)) {
+          lastEmitted = partial;
+          yield partial;
+        }
       }
-      final partial = _parsePartialStudyPack(buf.toString(), lang);
-      if (partial != null && _packDiffers(partial, lastEmitted)) {
-        lastEmitted = partial;
-        yield partial;
-      }
+    } finally {
+      try { await chat.close(); } catch (_) {}
     }
     final finalJson = _extractJson(buf.toString());
     final finalPack = StudyPack(
@@ -802,23 +828,27 @@ class GemmaService {
         'they land.\n\n'
         'Transcript:\n"""\n$trimmed\n"""\n\nJSON:';
     final chat = await _model!.createChat();
-    await chat.addQueryChunk(Message.text(text: prompt, isUser: true));
     final buf = StringBuffer();
     var lastYielded = 0;
-    await for (final chunk in chat.generateChatResponseAsync()) {
-      switch (chunk) {
-        case TextResponse(:final token):
-          buf.write(token);
-        case ThinkingResponse(:final content):
-          buf.write(content);
-        default:
-          break;
+    try {
+      await chat.addQueryChunk(Message.text(text: prompt, isUser: true));
+      await for (final chunk in chat.generateChatResponseAsync()) {
+        switch (chunk) {
+          case TextResponse(:final token):
+            buf.write(token);
+          case ThinkingResponse(:final content):
+            buf.write(content);
+          default:
+            break;
+        }
+        final parsed = _parseQuizItems(buf.toString());
+        while (lastYielded < parsed.length) {
+          yield parsed[lastYielded];
+          lastYielded += 1;
+        }
       }
-      final parsed = _parseQuizItems(buf.toString());
-      while (lastYielded < parsed.length) {
-        yield parsed[lastYielded];
-        lastYielded += 1;
-      }
+    } finally {
+      try { await chat.close(); } catch (_) {}
     }
     final finalItems = _parseQuizItems(buf.toString());
     while (lastYielded < finalItems.length) {
