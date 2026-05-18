@@ -104,25 +104,46 @@ class BundleStore {
   }
 
   Future<void> _ensureSampleLecture() async {
+    await _seedLecture(
+      classId: kSampleLectureClassId,
+      title: kSampleLectureTitle,
+      transcript: kSampleLectureTranscript,
+      ageDays: 1,
+      durationMinutes: 38,
+    );
+    await _seedLecture(
+      classId: kSvdLectureClassId,
+      title: kSvdLectureTitle,
+      transcript: kSvdLectureTranscript,
+      ageDays: 2,
+      durationMinutes: 50,
+    );
+  }
+
+  Future<void> _seedLecture({
+    required String classId,
+    required String title,
+    required String transcript,
+    required int ageDays,
+    required int durationMinutes,
+  }) async {
     final root = await _root;
-    final dir = Directory('${root.path}/${kSampleLectureClassId}_en');
+    final dir = Directory('${root.path}/${classId}_en');
     final sentinel = File('${dir.path}/.seeded');
     if (await sentinel.exists()) return;
     if (await dir.exists()) {
-      // Already created by a previous run (older version without sentinel).
-      // Just write the sentinel and bail.
       await sentinel.writeAsString('1');
       return;
     }
-    final startedAt = DateTime.now().toUtc().subtract(const Duration(days: 1));
-    final endedAt = startedAt.add(const Duration(minutes: 38));
+    final startedAt = DateTime.now().toUtc().subtract(Duration(days: ageDays));
+    final endedAt = startedAt.add(Duration(minutes: durationMinutes));
     await saveLocal(
-      classId: kSampleLectureClassId,
-      title: kSampleLectureTitle,
+      classId: classId,
+      title: title,
       lang: 'en',
       startedAt: startedAt,
       endedAt: endedAt,
-      transcript: kSampleLectureTranscript,
+      transcript: transcript,
       studyPack: null,
     );
     await sentinel.writeAsString('1');
