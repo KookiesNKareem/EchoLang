@@ -1,3 +1,5 @@
+# NEW
+IOS APP TEST LINK: https://testflight.apple.com/join/f8r5aeTX
 <p align="center">
   <img src="assets/banner.png" alt="EchoLang — offline classroom AI for any language" />
 </p>
